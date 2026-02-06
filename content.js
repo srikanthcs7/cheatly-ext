@@ -550,6 +550,140 @@
       (texts.includes('correct') && texts.includes('incorrect'));
   }
 
+  // ============================================================
+  // QUESTION SUBTYPE DETECTION — Accuracy Enhancement
+  // ============================================================
+
+  /**
+   * Detect negative MCQ patterns: "which is NOT", "which is WRONG",
+   * "which is INCORRECT", "which is FALSE", "choose the wrong"
+   */
+  function detectNegativeMCQ(text) {
+    const negativePatterns = [
+      /which\s+(?:of\s+the\s+following\s+)?(?:is|are)\s+(?:NOT|not)\b/i,
+      /which\s+(?:of\s+the\s+following\s+)?(?:is|are)\s+(?:WRONG|wrong|INCORRECT|incorrect|FALSE|false)\b/i,
+      /(?:choose|select|pick|identify|find)\s+(?:the\s+)?(?:WRONG|wrong|INCORRECT|incorrect|FALSE|false)\b/i,
+      /(?:is|are)\s+(?:NOT|not)\s+(?:true|correct|right|accurate|valid)\b/i,
+      /(?:NOT|not)\s+(?:a|an)\s+(?:feature|characteristic|property|example|type|method|function)\b/i,
+      /(?:INCORRECT|incorrect|WRONG|wrong|FALSE|false)\s+(?:statement|answer|option|assertion)\b/i,
+      /(?:cannot|can't|couldn't|does\s+not|doesn't|is\s+not|isn't)\s+be\s+(?:used|applied|considered)\b/i,
+      /\bnot\s+(?:a\s+valid|an?\s+example|characteristic)\b/i,
+      /\bexcept\b/i,
+    ];
+    for (const pattern of negativePatterns) {
+      if (pattern.test(text)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Detect "all EXCEPT" pattern: "all of the following are true EXCEPT",
+   * "each of the following EXCEPT"
+   */
+  function detectExceptPattern(text) {
+    const exceptPatterns = [
+      /all\s+(?:of\s+the\s+following\s+)?(?:are|is|were|was)\s+.*?\bEXCEPT\b/i,
+      /all\s+(?:of\s+the\s+following\s+)?\bEXCEPT\b/i,
+      /each\s+(?:of\s+the\s+following\s+)?\bEXCEPT\b/i,
+      /(?:true|correct|right|valid|accurate)\s+.*?\bEXCEPT\b/i,
+      /\bEXCEPT\b\s+(?:which|that|for)/i,
+      /which\s+(?:one\s+)?(?:of\s+the\s+following\s+)?(?:does|is|are|has|was|were)\s+NOT\b/i,
+    ];
+    for (const pattern of exceptPatterns) {
+      if (pattern.test(text)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Detect numerical/calculation questions
+   */
+  function detectNumerical(text) {
+    const numericalPatterns = [
+      /(?:calculate|compute|find\s+the\s+value|evaluate|solve|what\s+is\s+the\s+(?:value|result|sum|product|area|volume|distance|speed|rate|percentage|ratio))/i,
+      /(?:how\s+(?:many|much|far|long|fast|often|old))\b/i,
+      /\b(?:equals?|=)\s*\?/i,
+      /\b(?:simplify|factor|derive|integrate|differentiate)\b/i,
+      /\b\d+\s*[\+\-\*\/\^]\s*\d+/,
+      /\b(?:x|y)\s*[\+\-]\s*\d+\s*=\s*\d+/i,
+    ];
+    for (const pattern of numericalPatterns) {
+      if (pattern.test(text)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Main subtype detector — refines base type into specialized subtypes.
+   * Returns { refinedType, instructions } where instructions are hints
+   * extracted from the question that help the AI answer correctly.
+   */
+  function detectQuestionSubtype(questionText, baseType) {
+    const text = questionText || '';
+    let refinedType = baseType;
+    let instructions = '';
+
+    if (baseType === 'MULTIPLE_CHOICE' || baseType === 'MULTI_SELECT') {
+      if (detectExceptPattern(text)) {
+        refinedType = 'MCQ_EXCEPT';
+        instructions = extractInstructions(text, 'except');
+      } else if (detectNegativeMCQ(text)) {
+        refinedType = 'MCQ_NEGATIVE';
+        instructions = extractInstructions(text, 'negative');
+      } else if (detectNumerical(text)) {
+        refinedType = 'NUMERICAL';
+        instructions = extractInstructions(text, 'numerical');
+      }
+    } else if (baseType === 'FILL_BLANK' || baseType === 'SHORT_ANSWER') {
+      if (detectNumerical(text)) {
+        refinedType = 'NUMERICAL';
+        instructions = extractInstructions(text, 'numerical');
+      }
+    }
+
+    if (refinedType !== baseType) {
+      devLog('Subtype detected:', baseType, '→', refinedType, 'instructions:', instructions.substring(0, 60));
+    }
+
+    return { refinedType, instructions };
+  }
+
+  /**
+   * Extract special instructions from the question text that help
+   * the AI understand what's being asked.
+   */
+  function extractInstructions(questionText, subtype) {
+    const text = questionText || '';
+
+    if (subtype === 'except') {
+      // Extract the core assertion: "All of the following are properties of X EXCEPT"
+      const exceptMatch = text.match(/(all\s+(?:of\s+the\s+following\s+)?(?:are|is|were|was)\s+.+?)\s*EXCEPT/i);
+      if (exceptMatch) {
+        return `INVERSION: ${exceptMatch[1].trim()} — find the one that does NOT fit.`;
+      }
+      return 'INVERSION: Find the option that does NOT belong / is the exception.';
+    }
+
+    if (subtype === 'negative') {
+      // Extract what they're negating
+      const negMatch = text.match(/(which\s+(?:of\s+the\s+following\s+)?(?:is|are)\s+(?:NOT|WRONG|INCORRECT|FALSE)\s+.{0,80}?)[?.!]/i);
+      if (negMatch) {
+        return `NEGATION: ${negMatch[1].trim()} — choose the WRONG/FALSE/INCORRECT option.`;
+      }
+      const chooseWrong = text.match(/((?:choose|select|pick|identify|find)\s+(?:the\s+)?(?:WRONG|INCORRECT|FALSE)\s+.{0,80}?)[?.!]/i);
+      if (chooseWrong) {
+        return `NEGATION: ${chooseWrong[1].trim()}`;
+      }
+      return 'NEGATION: This question asks for the WRONG/INCORRECT/FALSE option. Choose what is NOT true.';
+    }
+
+    if (subtype === 'numerical') {
+      return 'CALCULATION: Show your work mentally. Verify the numerical answer before responding.';
+    }
+
+    return '';
+  }
+
   function extractOptionsAndType(container) {
     // ---- Strategy 1: Standard radio buttons ----
     const radios = container.querySelectorAll('input[type="radio"]');
@@ -772,8 +906,13 @@
     const optionData = extractOptionsAndType(container);
     const images = await extractImages(container);
 
+    // Detect question subtype for accuracy enhancement
+    const { refinedType, instructions } = detectQuestionSubtype(questionText, optionData.type);
+
     devLog('Question extracted:', {
       type: optionData.type,
+      refinedType,
+      instructions: instructions ? instructions.substring(0, 50) : '(none)',
       textLength: questionText.length,
       options: optionData.options?.length || 0,
       matchItems: optionData.matchItems?.length || 0,
@@ -783,7 +922,9 @@
 
     return {
       questionText,
-      type: optionData.type,
+      type: refinedType,
+      baseType: optionData.type,
+      instructions,
       options: optionData.options.map(o => ({ text: o.text, identifier: o.identifier, value: o.value })),
       matchItems: optionData.matchItems?.map(m => ({ text: m.text, identifier: m.identifier, selectOptions: m.selectOptions })),
       images,

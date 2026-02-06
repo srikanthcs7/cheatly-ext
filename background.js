@@ -84,9 +84,9 @@ const AI_PROVIDERS = {
       { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini (Balanced)', tier: 'balanced' },
       { id: 'gpt-4.1', name: 'GPT-4.1 (Powerful)', tier: 'powerful' }
     ],
-    makeRequest: async (apiKey, model, prompt, images) => {
+    makeRequest: async (apiKey, model, prompt, images, temperature = 0.1) => {
       const userContent = buildOpenAIContent(prompt, images);
-      devLog('OpenAI request:', model, 'images:', images?.length || 0);
+      devLog('OpenAI request:', model, 'temp:', temperature, 'images:', images?.length || 0);
 
       const resp = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -100,7 +100,7 @@ const AI_PROVIDERS = {
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: userContent }
           ],
-          temperature: 0.1,
+          temperature,
           max_tokens: 1024
         })
       });
@@ -121,9 +121,9 @@ const AI_PROVIDERS = {
       { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Balanced)', tier: 'balanced' },
       { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Powerful)', tier: 'powerful' }
     ],
-    makeRequest: async (apiKey, model, prompt, images) => {
+    makeRequest: async (apiKey, model, prompt, images, temperature = 0.1) => {
       const parts = buildGeminiParts(prompt, images);
-      devLog('Gemini request:', model, 'images:', images?.length || 0);
+      devLog('Gemini request:', model, 'temp:', temperature, 'images:', images?.length || 0);
 
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const resp = await fetch(url, {
@@ -132,7 +132,7 @@ const AI_PROVIDERS = {
         body: JSON.stringify({
           contents: [{ parts }],
           generationConfig: {
-            temperature: 0.1,
+            temperature,
             maxOutputTokens: 1024
           }
         })
@@ -154,9 +154,9 @@ const AI_PROVIDERS = {
       { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4 (Balanced)', tier: 'balanced' },
       { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5 (Powerful)', tier: 'powerful' }
     ],
-    makeRequest: async (apiKey, model, prompt, images) => {
+    makeRequest: async (apiKey, model, prompt, images, temperature = 0.1) => {
       const userContent = buildAnthropicContent(prompt, images);
-      devLog('Anthropic request:', model, 'images:', images?.length || 0);
+      devLog('Anthropic request:', model, 'temp:', temperature, 'images:', images?.length || 0);
 
       const resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -169,6 +169,7 @@ const AI_PROVIDERS = {
         body: JSON.stringify({
           model,
           max_tokens: 1024,
+          temperature,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userContent }]
         })
@@ -263,6 +264,72 @@ CRITICAL RULES:
 - For multiple choice, ONLY output the letter/number, never the full option text`;
 
 // ============================================================
+// QUESTION TYPE CONFIGS — Per-type preambles and temperatures
+// ============================================================
+
+const QUESTION_TYPE_CONFIGS = {
+  MCQ_NEGATIVE: {
+    temperature: 0.0,
+    preamble: `CRITICAL: This is a NEGATIVE question — it asks you to find the WRONG, INCORRECT, or FALSE option.
+READ CAREFULLY: The question uses words like "NOT", "WRONG", "INCORRECT", or "FALSE".
+STRATEGY: Evaluate each option. Most options will be TRUE/CORRECT. You must find the ONE that is FALSE/WRONG/INCORRECT.
+Double-check your logic — students commonly get tricked by negation.`
+  },
+
+  MCQ_EXCEPT: {
+    temperature: 0.0,
+    preamble: `CRITICAL: This is an EXCEPT question — all options are true/valid EXCEPT one.
+READ CAREFULLY: The question says "all of the following... EXCEPT" or similar.
+STRATEGY: Check each option against the statement. Most will fit. Find the ONE that does NOT fit.
+The correct answer is the EXCEPTION — the option that breaks the pattern or is false.`
+  },
+
+  MULTIPLE_CHOICE: {
+    temperature: 0.1,
+    preamble: null
+  },
+
+  MULTI_SELECT: {
+    temperature: 0.1,
+    preamble: `This is a MULTI-SELECT question — there may be MORE THAN ONE correct answer.
+Evaluate EVERY option independently. Select ALL that are correct. Reply with all correct letters separated by commas.`
+  },
+
+  TRUE_FALSE: {
+    temperature: 0.0,
+    preamble: null
+  },
+
+  NUMERICAL: {
+    temperature: 0.0,
+    preamble: `This is a NUMERICAL/CALCULATION question.
+Show your reasoning internally, then verify your calculation before answering.
+Provide ONLY the final numerical answer (with units if specified in the question).
+Double-check arithmetic and unit conversions.`
+  },
+
+  FILL_BLANK: {
+    temperature: 0.1,
+    preamble: null
+  },
+
+  SHORT_ANSWER: {
+    temperature: 0.1,
+    preamble: null
+  },
+
+  MATCHING: {
+    temperature: 0.0,
+    preamble: `Match each item carefully. Verify each pairing is correct before responding.`
+  },
+
+  ESSAY: {
+    temperature: 0.3,
+    preamble: null
+  }
+};
+
+// ============================================================
 // SMART MODEL SWITCHING
 // ============================================================
 
@@ -309,7 +376,25 @@ function getTabState(tabId) {
 // ============================================================
 
 function buildPrompt(questionData) {
-  let prompt = `Question Type: ${questionData.type}\n\n`;
+  const type = questionData.type;
+  const baseType = questionData.baseType || type;
+  const typeConfig = QUESTION_TYPE_CONFIGS[type] || QUESTION_TYPE_CONFIGS[baseType] || {};
+
+  let prompt = '';
+
+  // Add type-specific preamble if available
+  if (typeConfig.preamble) {
+    prompt += `[SPECIAL INSTRUCTIONS]\n${typeConfig.preamble}\n\n`;
+  }
+
+  // Add extracted instructions from content script (e.g., "INVERSION: ...")
+  if (questionData.instructions) {
+    prompt += `[CONTEXT]\n${questionData.instructions}\n\n`;
+  }
+
+  // Use baseType for response format (AI recognizes MULTIPLE_CHOICE, not MCQ_NEGATIVE)
+  const displayType = (baseType && baseType !== type) ? `${baseType} (${type})` : type;
+  prompt += `Question Type: ${displayType}\n\n`;
   prompt += `Question: ${questionData.questionText}\n`;
 
   if (questionData.images && questionData.images.length > 0) {
@@ -323,7 +408,8 @@ function buildPrompt(questionData) {
     });
   }
 
-  if (questionData.type === 'MATCHING' && questionData.matchItems) {
+  const matchType = type === 'MATCHING' || baseType === 'MATCHING';
+  if (matchType && questionData.matchItems) {
     prompt += `\nItems to match:\n`;
     questionData.matchItems.forEach(item => {
       prompt += `${item.identifier}. ${item.text} → Choose from: ${item.selectOptions.join(', ')}\n`;
@@ -365,8 +451,16 @@ async function processQuestionDirect(questionData, settings) {
   const model = await resolveModel(provider, hasImages);
   const prompt = buildPrompt(questionData);
 
+  // Resolve per-type temperature
+  const type = questionData.type || 'MULTIPLE_CHOICE';
+  const baseType = questionData.baseType || type;
+  const typeConfig = QUESTION_TYPE_CONFIGS[type] || QUESTION_TYPE_CONFIGS[baseType] || {};
+  const temperature = typeConfig.temperature !== undefined ? typeConfig.temperature : 0.1;
+
   devLog('Processing (BYOK):', {
     type: questionData.type,
+    baseType: questionData.baseType,
+    temperature,
     textLength: questionData.questionText?.length,
     optionCount: questionData.options?.length,
     imageCount: images.length,
@@ -375,7 +469,7 @@ async function processQuestionDirect(questionData, settings) {
   });
 
   const startTime = Date.now();
-  const answer = await providerConfig.makeRequest(apiKey, model, prompt, hasImages ? images : null);
+  const answer = await providerConfig.makeRequest(apiKey, model, prompt, hasImages ? images : null, temperature);
   devLog('Answer received in', Date.now() - startTime, 'ms:', answer);
 
   await updateUsageStats();
