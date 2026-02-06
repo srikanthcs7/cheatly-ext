@@ -266,6 +266,20 @@ CRITICAL RULES:
 - Just the raw answer, nothing else
 - For multiple choice, ONLY output the letter/number, never the full option text`;
 
+const EXPLANATION_PROMPT = `You are a helpful tutor. Analyze the question (and any attached images/diagrams) and provide both the correct answer AND a clear explanation.
+
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
+ANSWER: [just the option identifier, e.g., "C"]
+EXPLANATION: [clear, step-by-step explanation of why this answer is correct]
+
+RULES:
+- The ANSWER line must contain ONLY the option letter/identifier (A, B, C, D, etc.) or the direct answer
+- The EXPLANATION should be concise but thorough (2-5 sentences)
+- Use simple, clear language
+- If it involves math/calculation, show the key steps
+- If images are provided, reference what you see in them
+- ALWAYS choose from the given options when options are provided`;
+
 // ============================================================
 // QUESTION TYPE CONFIGS — Per-type preambles and temperatures
 // ============================================================
@@ -331,6 +345,93 @@ Double-check arithmetic and unit conversions.`
     preamble: null
   }
 };
+
+// ============================================================
+// PROCESS EXPLANATION — Returns answer + explanation
+// ============================================================
+
+function buildExplanationPrompt(questionData) {
+  let prompt = '';
+
+  const type = questionData.type;
+  const baseType = questionData.baseType || type;
+  const displayType = (baseType && baseType !== type) ? `${baseType} (${type})` : type;
+
+  prompt += `Question Type: ${displayType}\n\n`;
+  prompt += `Question: ${questionData.questionText}\n`;
+
+  if (questionData.images && questionData.images.length > 0) {
+    prompt += `\n[${questionData.images.length} image(s) attached — analyze them carefully]\n`;
+  }
+
+  if (questionData.options && questionData.options.length > 0) {
+    prompt += `\nOptions:\n`;
+    questionData.options.forEach(opt => {
+      prompt += `${opt.identifier}. ${opt.text}\n`;
+    });
+  }
+
+  return prompt;
+}
+
+async function processExplanation(questionData) {
+  const settings = await chrome.storage.local.get([
+    'apiMode', 'provider', 'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic'
+  ]);
+
+  const apiMode = settings.apiMode || 'quizsolve';
+  const userPrompt = buildExplanationPrompt(questionData);
+  let rawAnswer;
+
+  if (apiMode === 'own_key') {
+    const provider = settings.provider || 'openai';
+    const providerConfig = AI_PROVIDERS[provider];
+    if (!providerConfig) throw new Error(`Unknown provider: ${provider}`);
+    const apiKey = settings[`apiKey_${provider}`];
+    if (!apiKey) throw new Error(`No API key set for ${providerConfig.name}.`);
+    const images = questionData.images || [];
+    const hasImages = images.length > 0;
+    const model = await resolveModel(provider, hasImages);
+
+    const fullPrompt = EXPLANATION_PROMPT + '\n\n' + userPrompt;
+    rawAnswer = await providerConfig.makeRequest(apiKey, model, fullPrompt, hasImages ? images : null, 0.3);
+  } else {
+    const sessionId = await getSessionId();
+    const fullPrompt = EXPLANATION_PROMPT + '\n\n' + userPrompt;
+    const payload = {
+      question: fullPrompt.substring(0, 3000),
+      context: questionData.questionText?.substring(0, 1000),
+      sessionId,
+      metadata: {
+        extensionVersion: chrome.runtime.getManifest().version,
+        platform: 'extension',
+        type: 'explanation',
+        timestamp: Date.now()
+      }
+    };
+    const response = await fetchWithRetry(QUIZSOLVE_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(45000)
+    });
+    if (!response.ok) await handleBackendError(response);
+    const data = await response.json();
+    rawAnswer = data.answer;
+  }
+
+  // Parse structured response: ANSWER: X\nEXPLANATION: ...
+  const answerMatch = rawAnswer.match(/ANSWER:\s*(.+?)(?:\n|$)/i);
+  const explanationMatch = rawAnswer.match(/EXPLANATION:\s*([\s\S]+)/i);
+
+  const answer = answerMatch ? answerMatch[1].trim() : rawAnswer.split('\n')[0].trim();
+  const explanation = explanationMatch ? explanationMatch[1].trim() : rawAnswer;
+
+  devLog('Explanation parsed — answer:', answer, 'explanation:', explanation.substring(0, 80));
+
+  await updateUsageStats();
+  return { answer, explanation };
+}
 
 // ============================================================
 // SMART MODEL SWITCHING
@@ -749,6 +850,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(answer => sendResponse({ success: true, answer }))
       .catch(err => {
         devError('Process question error:', err.message);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'PROCESS_EXPLANATION') {
+    processExplanation(message.data)
+      .then(result => sendResponse({ success: true, ...result }))
+      .catch(err => {
+        devError('Process explanation error:', err.message);
         sendResponse({ success: false, error: err.message });
       });
     return true;
