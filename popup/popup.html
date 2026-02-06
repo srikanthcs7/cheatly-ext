@@ -36,13 +36,35 @@
     <div class="tabs">
       <button class="tab active" data-tab="settings">Settings</button>
       <button class="tab" data-tab="models">Models</button>
+      <button class="tab" data-tab="usage">Usage</button>
       <button class="tab" data-tab="help">Help</button>
     </div>
 
     <!-- Settings Tab -->
     <div class="tab-content active" id="tab-settings">
-      <!-- API Key Section -->
+      <!-- API Mode Section -->
       <div class="section">
+        <label class="section-label">API Mode</label>
+        <div class="radio-group">
+          <label class="radio-option compact">
+            <input type="radio" name="apiMode" value="cheatly" checked>
+            <span class="radio-label">
+              <strong>Cheatly API</strong>
+              <small>Free — no key needed</small>
+            </span>
+          </label>
+          <label class="radio-option compact">
+            <input type="radio" name="apiMode" value="own_key">
+            <span class="radio-label">
+              <strong>Own API Key</strong>
+              <small>Use your own provider key</small>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <!-- API Key Section (only shown in own_key mode) -->
+      <div class="section" id="apiKeySection" style="display:none">
         <label class="section-label">API Key</label>
         <div class="api-key-row">
           <input type="password" id="apiKey" class="input" placeholder="Enter your API key...">
@@ -96,54 +118,132 @@
 
     <!-- Models Tab -->
     <div class="tab-content" id="tab-models">
-      <div class="section">
-        <label class="section-label">AI Provider</label>
-        <select id="providerSelect" class="select">
-          <option value="openai">OpenAI</option>
-          <option value="gemini">Google Gemini</option>
-          <option value="anthropic">Anthropic</option>
-        </select>
-      </div>
-
-      <div class="section">
-        <label class="section-label">Model</label>
-        <select id="modelSelect" class="select">
-          <!-- Populated dynamically -->
-        </select>
-      </div>
-
-      <div class="section model-info">
-        <div class="info-card" id="modelInfo">
-          <p class="info-title">GPT-4.1 Nano</p>
-          <p class="info-desc">Fastest and most cost-effective. Great for text-only questions.</p>
+      <!-- BYOK model settings (shown when own_key mode) -->
+      <div id="byokModelsSection">
+        <div class="section">
+          <label class="section-label">AI Provider</label>
+          <select id="providerSelect" class="select">
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
         </div>
-      </div>
 
-      <!-- Smart Model Switching -->
-      <div class="section">
-        <div class="switch-row">
-          <div class="switch-info">
-            <label class="section-label" style="margin-bottom:0">Smart Switch</label>
-            <small class="help-text">Auto-upgrade to powerful model for image questions</small>
+        <div class="section">
+          <label class="section-label">Model</label>
+          <select id="modelSelect" class="select">
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+
+        <div class="section model-info">
+          <div class="info-card" id="modelInfo">
+            <p class="info-title">GPT-4.1 Nano</p>
+            <p class="info-desc">Fastest and most cost-effective. Great for text-only questions.</p>
           </div>
-          <label class="toggle toggle-sm">
-            <input type="checkbox" id="smartSwitch">
-            <span class="toggle-slider"></span>
-          </label>
+        </div>
+
+        <!-- Smart Model Switching -->
+        <div class="section">
+          <div class="switch-row">
+            <div class="switch-info">
+              <label class="section-label" style="margin-bottom:0">Smart Switch</label>
+              <small class="help-text">Auto-upgrade to powerful model for image questions</small>
+            </div>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="smartSwitch">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Vision Model (shown when smart switch is on) -->
+        <div class="section" id="visionModelSection" style="display:none">
+          <label class="section-label">Vision Model (for images)</label>
+          <select id="visionModelSelect" class="select">
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+
+        <!-- Provider-specific API key links -->
+        <div class="section">
+          <a class="link" id="getApiKeyLink" href="#" target="_blank">Get API Key →</a>
         </div>
       </div>
 
-      <!-- Vision Model (shown when smart switch is on) -->
-      <div class="section" id="visionModelSection" style="display:none">
-        <label class="section-label">Vision Model (for images)</label>
-        <select id="visionModelSelect" class="select">
-          <!-- Populated dynamically -->
-        </select>
+      <!-- Cheatly API info (shown when cheatly mode) -->
+      <div id="cheatlyModelsSection" style="display:none">
+        <div class="section">
+          <div class="info-card">
+            <p class="info-title">Cheatly API</p>
+            <p class="info-desc">Models are automatically selected by our backend for optimal speed and accuracy. No configuration needed.</p>
+          </div>
+        </div>
+        <div class="section">
+          <div class="info-card">
+            <p class="info-title">Features</p>
+            <ul class="feature-list">
+              <li>Auto model selection</li>
+              <li>Rate-limited free tier</li>
+              <li>No API key required</li>
+              <li>Optimized for quiz questions</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Usage Tab -->
+    <div class="tab-content" id="tab-usage">
+      <div class="section">
+        <label class="section-label">Today's Usage</label>
+        <div class="usage-stat">
+          <span class="usage-value" id="usageToday">0</span>
+          <span class="usage-label">questions today</span>
+        </div>
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="usageProgressBar" style="width: 0%"></div>
+        </div>
+        <p class="help-text" id="usageLimitText">Free tier: 1000/day</p>
       </div>
 
-      <!-- Provider-specific API key links -->
       <div class="section">
-        <a class="link" id="getApiKeyLink" href="#" target="_blank">Get API Key →</a>
+        <label class="section-label">Total Questions</label>
+        <div class="usage-stat">
+          <span class="usage-value" id="usageTotal">0</span>
+          <span class="usage-label">all time</span>
+        </div>
+      </div>
+
+      <div class="section" id="rateLimitsSection">
+        <label class="section-label">Rate Limits</label>
+        <div class="rate-limits">
+          <div class="rate-limit-row">
+            <span class="rate-limit-label">Per minute</span>
+            <span class="rate-limit-value" id="rlMinute">10</span>
+          </div>
+          <div class="rate-limit-row">
+            <span class="rate-limit-label">Per hour</span>
+            <span class="rate-limit-value" id="rlHour">200</span>
+          </div>
+          <div class="rate-limit-row">
+            <span class="rate-limit-label">Per day</span>
+            <span class="rate-limit-value" id="rlDay">1000</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <label class="section-label">Session</label>
+        <div class="session-info">
+          <span class="session-id" id="sessionId">—</span>
+          <button class="btn-icon btn-icon-sm" id="copySessionId" title="Copy Session ID">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -152,8 +252,8 @@
       <div class="help-section">
         <h3>How to Use</h3>
         <ol class="help-list">
-          <li>Enter your API key in Settings</li>
-          <li>Choose your AI model in Models</li>
+          <li>Choose API mode in Settings (Cheatly API or own key)</li>
+          <li>If using own key, enter it and select model</li>
           <li>Press <kbd>Ctrl+Shift+U</kbd> to activate on any page</li>
           <li>Double-click on any question to get the answer</li>
         </ol>

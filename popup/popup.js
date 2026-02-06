@@ -1,6 +1,6 @@
 // ============================================================
 // Answer Mate - Popup Script
-// Settings UI, model selection, smart switching, state management
+// Settings UI, model selection, API mode, usage stats
 // ============================================================
 
 const API_KEY_LINKS = {
@@ -24,6 +24,7 @@ const MODEL_DESCRIPTIONS = {
 let providers = {};
 let currentProvider = 'openai';
 let currentModel = '';
+let currentApiMode = 'cheatly';
 let activeTabId = null;
 
 const $ = (sel) => document.querySelector(sel);
@@ -33,6 +34,7 @@ const toggleActive = $('#toggleActive');
 const statusDot = $('#statusDot');
 const statusText = $('#statusText');
 const apiKeyInput = $('#apiKey');
+const apiKeySection = $('#apiKeySection');
 const toggleKeyVisibility = $('#toggleKeyVisibility');
 const providerSelect = $('#providerSelect');
 const modelSelect = $('#modelSelect');
@@ -45,13 +47,15 @@ const apiKeyHelp = $('#apiKeyHelp');
 const smartSwitch = $('#smartSwitch');
 const visionModelSection = $('#visionModelSection');
 const visionModelSelect = $('#visionModelSelect');
+const byokModelsSection = $('#byokModelsSection');
+const cheatlyModelsSection = $('#cheatlyModelsSection');
+const rateLimitsSection = $('#rateLimitsSection');
 
 // ---- Initialization ----
 async function init() {
   chrome.runtime.sendMessage({ type: 'GET_PROVIDERS' }, (resp) => {
     if (resp?.providers) {
       providers = resp.providers;
-      // Re-render model lists once providers are loaded
       updateModelList();
       updateVisionModelList();
     }
@@ -63,12 +67,19 @@ async function init() {
   const settings = await chrome.storage.local.get([
     'provider', 'model', 'answerMode', 'highlightDuration',
     'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic',
-    'smartSwitch', 'visionModel'
+    'smartSwitch', 'visionModel', 'apiMode',
+    'stats', 'rateLimits', 'sessionId'
   ]);
 
+  // API Mode
+  currentApiMode = settings.apiMode || 'cheatly';
+  const apiModeRadio = document.querySelector(`input[name="apiMode"][value="${currentApiMode}"]`);
+  if (apiModeRadio) apiModeRadio.checked = true;
+  updateApiModeUI(currentApiMode);
+
+  // Provider / Model
   currentProvider = settings.provider || 'openai';
   currentModel = settings.model || '';
-
   providerSelect.value = currentProvider;
   updateModelList();
   updateApiKeyLink();
@@ -77,6 +88,7 @@ async function init() {
   apiKeyInput.value = savedKey;
   updateApiKeyHelp();
 
+  // Answer mode
   const mode = settings.answerMode || 'auto';
   const radio = document.querySelector(`input[name="answerMode"][value="${mode}"]`);
   if (radio) radio.checked = true;
@@ -94,6 +106,16 @@ async function init() {
     visionModelSelect.value = settings.visionModel;
   }
 
+  // Usage stats
+  updateUsageDisplay(settings.stats, settings.rateLimits);
+
+  // Session ID
+  if (settings.sessionId) {
+    $('#sessionId').textContent = settings.sessionId.substring(0, 8) + '...';
+    $('#sessionId').dataset.full = settings.sessionId;
+  }
+
+  // Active state
   if (activeTabId) {
     chrome.runtime.sendMessage({ type: 'GET_STATE', tabId: activeTabId }, (resp) => {
       if (resp) updateActiveState(resp.active);
@@ -117,6 +139,20 @@ function setupEventListeners() {
       $$('.tab-content').forEach(c => c.classList.remove('active'));
       tab.classList.add('active');
       $(`#tab-${tab.dataset.tab}`).classList.add('active');
+
+      // Refresh usage stats when switching to usage tab
+      if (tab.dataset.tab === 'usage') {
+        refreshUsageStats();
+      }
+    });
+  });
+
+  // API Mode toggle
+  $$('input[name="apiMode"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      currentApiMode = radio.value;
+      chrome.storage.local.set({ apiMode: currentApiMode });
+      updateApiModeUI(currentApiMode);
     });
   });
 
@@ -152,14 +188,12 @@ function setupEventListeners() {
     updateModelInfo();
   });
 
-  // Smart switch toggle
   smartSwitch.addEventListener('change', () => {
     const enabled = smartSwitch.checked;
     chrome.storage.local.set({ smartSwitch: enabled });
     updateSmartSwitchVisibility(enabled);
   });
 
-  // Vision model select
   visionModelSelect.addEventListener('change', () => {
     chrome.storage.local.set({ visionModel: visionModelSelect.value });
   });
@@ -177,6 +211,31 @@ function setupEventListeners() {
     highlightDurationValue.textContent = (val / 1000) + 's';
     chrome.storage.local.set({ highlightDuration: val });
   });
+
+  // Copy session ID
+  $('#copySessionId').addEventListener('click', () => {
+    const full = $('#sessionId').dataset.full;
+    if (full) {
+      navigator.clipboard.writeText(full).then(() => {
+        showNotification('Session ID copied', 'success');
+      });
+    }
+  });
+}
+
+// ---- API Mode UI ----
+function updateApiModeUI(mode) {
+  const isOwnKey = mode === 'own_key';
+
+  // Settings tab: show/hide API key
+  apiKeySection.style.display = isOwnKey ? 'flex' : 'none';
+
+  // Models tab: toggle sections
+  byokModelsSection.style.display = isOwnKey ? 'block' : 'none';
+  cheatlyModelsSection.style.display = isOwnKey ? 'none' : 'block';
+
+  // Usage tab: show rate limits only in cheatly mode
+  rateLimitsSection.style.display = isOwnKey ? 'none' : 'flex';
 }
 
 // ---- UI Updates ----
@@ -215,7 +274,6 @@ function updateVisionModelList() {
   visionModelSelect.innerHTML = '';
 
   if (providerConfig) {
-    // Only show balanced and powerful tiers as vision model options
     providerConfig.models.forEach(model => {
       if (model.tier === 'balanced' || model.tier === 'powerful') {
         const opt = document.createElement('option');
@@ -255,6 +313,42 @@ function updateHighlightVisibility(mode) {
 
 function updateSmartSwitchVisibility(enabled) {
   visionModelSection.style.display = enabled ? 'flex' : 'none';
+}
+
+// ---- Usage Stats ----
+function updateUsageDisplay(stats, rateLimits) {
+  if (stats) {
+    // Check if today's date matches
+    const today = new Date().toISOString().split('T')[0];
+    const todayCount = stats.lastRequestDate === today ? (stats.requestsToday || 0) : 0;
+
+    $('#usageToday').textContent = todayCount;
+    $('#usageTotal').textContent = stats.totalRequests || 0;
+
+    const percent = Math.min(100, (todayCount / 1000) * 100);
+    $('#usageProgressBar').style.width = percent + '%';
+
+    if (percent > 80) {
+      $('#usageProgressBar').style.background = 'var(--danger)';
+    } else if (percent > 50) {
+      $('#usageProgressBar').style.background = '#f59e0b';
+    }
+  }
+
+  if (rateLimits?.remaining) {
+    $('#rlMinute').textContent = rateLimits.remaining.minute;
+    $('#rlHour').textContent = rateLimits.remaining.hour;
+    $('#rlDay').textContent = rateLimits.remaining.day;
+
+    if (rateLimits.remaining.day < 100) {
+      $('#rlDay').classList.add('low');
+    }
+  }
+}
+
+async function refreshUsageStats() {
+  const data = await chrome.storage.local.get(['stats', 'rateLimits']);
+  updateUsageDisplay(data.stats, data.rateLimits);
 }
 
 // ---- Notification ----

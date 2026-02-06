@@ -1,6 +1,7 @@
 // ============================================================
 // Answer Mate - Content Script
 // Detects questions, extracts context + images, applies answers
+// Robust auto-answer engine with multi-strategy click simulation
 // ============================================================
 
 (function () {
@@ -14,6 +15,9 @@
   }
   function devWarn(...args) {
     if (IS_DEV) console.warn('[AnswerMate:Content]', ...args);
+  }
+  function devError(...args) {
+    if (IS_DEV) console.error('[AnswerMate:Content]', ...args);
   }
 
   let isActive = false;
@@ -58,7 +62,7 @@
   // ============================================================
 
   const MAX_IMAGE_DIMENSION = 1568;
-  const MIN_IMAGE_SIZE = 80; // Raised: skip small option-marker icons (was 30)
+  const MIN_IMAGE_SIZE = 80;
   const MAX_IMAGES_PER_QUESTION = 5;
 
   function imageElementToBase64(img) {
@@ -142,7 +146,6 @@
         src.includes('checkmark') || src.includes('bullet') || src.includes('arrow')) return false;
 
     if (img.getAttribute('role') === 'presentation') return false;
-    if (img.alt === '' && (width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE)) return false;
     return true;
   }
 
@@ -206,9 +209,6 @@
   // QUESTION DETECTION ENGINE (v2 — SPA-aware, platform-agnostic)
   // ============================================================
 
-  /**
-   * Check if an element is visible in the page
-   */
   function isVisible(el) {
     if (!el || !el.getBoundingClientRect) return false;
     const rect = el.getBoundingClientRect();
@@ -219,10 +219,6 @@
            parseFloat(style.opacity) > 0;
   }
 
-  /**
-   * Known per-question container selectors for popular quiz platforms.
-   * Ordered most specific first. Each selector should match a SINGLE question.
-   */
   const QUESTION_ITEM_SELECTORS = [
     // ProProfs
     '.ques_marg',
@@ -249,6 +245,13 @@
     '.SetPageTerms-term',
     // Kahoot
     '.question-container',
+    // Quizizz
+    '[class*="QuestionSlide"]',
+    '[class*="questionWrapper"]',
+    // EdPuzzle
+    '.question-container',
+    // Edulastic
+    '[class*="question-content"]',
     // Generic patterns
     '[class*="question-item"]',
     '[class*="questionItem"]',
@@ -256,13 +259,15 @@
     '[class*="question-row"]',
     '[class*="question-block"]',
     '[class*="questionBlock"]',
+    '[class*="question-card"]',
+    '[class*="questionCard"]',
     '.question-wrapper',
     '.problem-body',
+    '[data-question]',
+    '[data-question-id]',
+    '[data-qid]',
   ];
 
-  /**
-   * Find all potential single-question containers on the page
-   */
   function findAllQuestionContainers() {
     const found = [];
     const seenElements = new Set();
@@ -276,26 +281,12 @@
             found.push(el);
           }
         }
-      } catch (_) {} // Invalid selector on some pages
+      } catch (_) {}
     }
 
     return found;
   }
 
-  /**
-   * Check if element A contains element B
-   */
-  function contains(a, b) {
-    return a !== b && a.contains(b);
-  }
-
-  /**
-   * Find the best question container for a click target.
-   * Strategy:
-   * 1. Check if click target is inside a known question container → use it
-   * 2. Walk up from click target scoring ancestors → use best match
-   * 3. Fallback: find the currently visible question nearest to the click
-   */
   function findQuestionContainer(clickTarget) {
     // ------ Strategy 1: Known platform selectors (most reliable) ------
     for (const selector of QUESTION_ITEM_SELECTORS) {
@@ -316,12 +307,10 @@
 
     while (current && current !== document.body && depth < 20) {
       const score = scoreContainer(current);
-      // Prefer the SMALLEST high-scoring container (not the biggest)
       if (score > maxScore) {
         maxScore = score;
         bestContainer = current;
       }
-      // Stop at very strong signal — don't go higher
       if (score >= 8) {
         devLog('Container found via scoring:', score, current.tagName, current.className?.toString()?.substring(0, 40));
         return bestContainer;
@@ -338,14 +327,12 @@
     // ------ Strategy 3: Find nearest VISIBLE question on the page ------
     const allContainers = findAllQuestionContainers();
     if (allContainers.length > 0) {
-      // If click is inside one of them, use it
       for (const c of allContainers) {
         if (c.contains(clickTarget)) {
           devLog('Container found via page-scan contains');
           return c;
         }
       }
-      // Otherwise find the one closest to the click target's position
       const clickRect = clickTarget.getBoundingClientRect();
       const clickY = clickRect.top + clickRect.height / 2;
       let closestDist = Infinity;
@@ -379,14 +366,12 @@
     const id = (element.id || '').toLowerCase();
     const role = (element.getAttribute('role') || '').toLowerCase();
 
-    // Inputs present
     const radios = element.querySelectorAll('input[type="radio"]');
     const checkboxes = element.querySelectorAll('input[type="checkbox"]');
     const selects = element.querySelectorAll('select');
-    const textInputs = element.querySelectorAll('input[type="text"], input:not([type]), textarea');
+    const textInputs = element.querySelectorAll('input[type="text"], input:not([type]):not([role="combobox"]), textarea');
     const totalInputs = radios.length + checkboxes.length + selects.length + textInputs.length;
 
-    // Also count div-based options (ProProfs, Google Forms, etc.)
     const divOptions = element.querySelectorAll(
       '.opt_text, .questonnopt, [role="radio"], [role="checkbox"], [role="option"], ' +
       '.answers-list > li, [class*="answer-option"], [class*="choice-item"], [class*="option-text"]'
@@ -397,7 +382,6 @@
     if (radios.length >= 2) score += 3;
     if (checkboxes.length >= 2) score += 2;
 
-    // Question-like class/id names
     const namePattern = /question|quiz|problem|item|prompt|assessment|mcq|answer-group|response|ques_marg/;
     if (namePattern.test(cls)) score += 5;
     if (namePattern.test(id)) score += 4;
@@ -415,7 +399,6 @@
 
     if (['body', 'html', 'main', 'header', 'footer', 'nav'].includes(tag)) score -= 10;
 
-    // Penalize containers that hold MULTIPLE questions
     const childQuestions = element.querySelectorAll(
       '.ques_marg, .question, .que, [class*="question-item"], [class*="quiz-item"]'
     );
@@ -496,7 +479,9 @@
       'legend', '.display_question > .question_text',
       '[class*="questionBody"]', '[class*="question-body"]',
       '.text > .user_content', '.question_description',
-      '.qtext', '.formulation .qtext'
+      '.qtext', '.formulation .qtext',
+      '[class*="question-content"]', '[class*="questionContent"]',
+      '.question-header', '[class*="questionText"]',
     ];
 
     for (const sel of questionSelectors) {
@@ -506,19 +491,16 @@
       }
     }
 
-    // Gather text that appears BEFORE the answers/options section
     const answerSection = container.querySelector(
       '.answers-list, .answer_list, [class*="answer"], [class*="option"], ' +
       '[class*="choice"], input[type="radio"], input[type="checkbox"]'
     );
 
     if (answerSection) {
-      // Collect all text nodes before the answer section
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
       let parts = [];
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        // Stop when we hit the answer section
         if (answerSection.contains(node) || answerSection === node.parentElement) break;
         const text = node.textContent.trim();
         if (text.length > 2) parts.push(text);
@@ -529,7 +511,6 @@
       }
     }
 
-    // Generic: find text blocks before inputs
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT);
     let questionParts = [];
     let foundInput = false;
@@ -592,6 +573,7 @@
           identifier: String.fromCharCode(65 + index)
         });
       });
+      devLog('Options found via radio buttons:', options.length);
       return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
     }
 
@@ -610,6 +592,7 @@
           identifier: String.fromCharCode(65 + index)
         });
       });
+      devLog('Options found via checkboxes:', options.length);
       return { type: 'MULTI_SELECT', options };
     }
 
@@ -622,6 +605,7 @@
         const selectOptions = Array.from(select.options).filter(o => o.value && o.value !== '').map(o => o.text.trim());
         matchItems.push({ element: select, inputElement: select, text: label || `Item ${index + 1}`, selectOptions, identifier: String(index + 1) });
       });
+      devLog('Options found via matching selects:', matchItems.length);
       return { type: 'MATCHING', options: [], matchItems };
     }
 
@@ -635,7 +619,10 @@
           value: o.value, identifier: String.fromCharCode(65 + index),
           isSelectOption: true, optionIndex: o.index
         }));
-      if (options.length >= 2) return { type: 'MULTIPLE_CHOICE', options, isDropdown: true };
+      if (options.length >= 2) {
+        devLog('Options found via dropdown select:', options.length);
+        return { type: 'MULTIPLE_CHOICE', options, isDropdown: true };
+      }
     }
 
     // ---- Strategy 5: Text inputs ----
@@ -644,6 +631,7 @@
     );
     if (textInputs.length > 0) {
       const input = textInputs[0];
+      devLog('Found text input/textarea for fill-in');
       return { type: input.tagName.toLowerCase() === 'textarea' ? 'ESSAY' : 'FILL_BLANK', options: [], inputElement: input };
     }
 
@@ -660,11 +648,11 @@
           isCustom: true
         });
       });
+      devLog('Options found via ARIA roles:', options.length);
       return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
     }
 
     // ---- Strategy 7: Div-based clickable options (ProProfs, etc.) ----
-    // Look for common option list patterns
     const optionListSelectors = [
       '.answers-list > li',
       '.answer-list > li',
@@ -673,13 +661,25 @@
       '[class*="answer-option"]',
       '[class*="choice-item"]',
       '.opt_text',
+      // More generic patterns
+      'ul.options > li',
+      'ol.options > li',
+      '.answer-choices > div',
+      '[class*="answerOption"]',
+      '[class*="choiceItem"]',
+      '[class*="AnswerChoice"]',
+      '[data-answer]',
+      '[data-option]',
+      // Button-based options
+      'button[class*="option"]',
+      'button[class*="answer"]',
+      'button[class*="choice"]',
     ];
     for (const sel of optionListSelectors) {
       const items = container.querySelectorAll(sel);
       if (items.length >= 2) {
         const options = [];
         items.forEach((item, index) => {
-          // Get the option text (skip the label letter div)
           const optText = item.querySelector('.opt_text') || item;
           const text = optText.textContent.trim();
           if (text) {
@@ -694,7 +694,7 @@
           }
         });
         if (options.length >= 2) {
-          devLog('Found div-based options via selector:', sel, options.length);
+          devLog('Options found via div-based selector:', sel, options.length);
           return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
         }
       }
@@ -713,24 +713,61 @@
           isCustom: true
         });
       });
+      devLog('Options found via data-testid:', options.length);
       return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
     }
 
+    // ---- Strategy 9: Clickable list items with reasonable text ----
+    // Generic fallback: find <li> children of any list within the container
+    // that look like answer options (have text, roughly similar length, multiple items)
+    const lists = container.querySelectorAll('ul, ol');
+    for (const list of lists) {
+      const items = list.querySelectorAll(':scope > li');
+      if (items.length >= 2 && items.length <= 10) {
+        const texts = [];
+        items.forEach(item => texts.push(item.textContent.trim()));
+        // Check that items look like options (not navigation, not empty)
+        const nonEmpty = texts.filter(t => t.length > 0 && t.length < 500);
+        if (nonEmpty.length >= 2) {
+          const options = [];
+          items.forEach((item, index) => {
+            const text = item.textContent.trim();
+            if (text.length > 0 && text.length < 500) {
+              options.push({
+                element: item, inputElement: item,
+                text, value: text,
+                identifier: String.fromCharCode(65 + index),
+                isCustom: true
+              });
+            }
+          });
+          if (options.length >= 2) {
+            devLog('Options found via generic list items:', options.length);
+            return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
+          }
+        }
+      }
+    }
+
+    devLog('No options found — treating as SHORT_ANSWER');
     return { type: 'SHORT_ANSWER', options: [] };
   }
 
-  /**
-   * Extract full question context including images
-   */
   async function extractQuestionContext(targetElement) {
     const container = findQuestionContainer(targetElement);
-    if (!container) return null;
+    if (!container) {
+      devWarn('No question container found for target:', targetElement.tagName);
+      return null;
+    }
 
     devLog('Question container:', container.tagName, container.className?.toString()?.substring(0, 60),
            'textLen:', container.textContent.trim().length);
 
     const questionText = extractQuestionText(container);
-    if (!questionText || questionText.length < 3) return null;
+    if (!questionText || questionText.length < 3) {
+      devWarn('Question text too short or empty');
+      return null;
+    }
 
     const optionData = extractOptionsAndType(container);
     const images = await extractImages(container);
@@ -739,6 +776,7 @@
       type: optionData.type,
       textLength: questionText.length,
       options: optionData.options?.length || 0,
+      matchItems: optionData.matchItems?.length || 0,
       images: images.length,
       questionPreview: questionText.substring(0, 80)
     });
@@ -761,62 +799,273 @@
   }
 
   // ============================================================
-  // ANSWER APPLICATION ENGINE
+  // ROBUST CLICK SIMULATION ENGINE
+  // Multi-strategy approach for maximum framework compatibility
   // ============================================================
 
-  function findMatchingOption(options, answer) {
-    const cleanAnswer = answer.trim().toUpperCase();
-
-    // Direct identifier match (A, B, C, D)
-    for (const opt of options) {
-      if (opt.identifier.toUpperCase() === cleanAnswer) return opt;
-    }
-    // First char match
-    const firstChar = cleanAnswer.charAt(0);
-    for (const opt of options) {
-      if (opt.identifier.toUpperCase() === firstChar) return opt;
-    }
-    // Exact text match
-    const lowerAnswer = answer.trim().toLowerCase();
-    for (const opt of options) {
-      if (opt.text.toLowerCase().trim() === lowerAnswer) return opt;
-    }
-    // Fuzzy text match
-    for (const opt of options) {
-      if (opt.text.toLowerCase().includes(lowerAnswer) || lowerAnswer.includes(opt.text.toLowerCase())) {
-        return opt;
-      }
-    }
-    return null;
-  }
-
   /**
-   * Simulate a full natural click sequence on an element.
-   * Uses multiple strategies for maximum compatibility with frameworks.
+   * Full pointer+mouse event sequence on an element.
+   * Covers vanilla JS, React, Angular, Vue event delegation.
    */
-  function simulateClick(element) {
+  function dispatchFullClickSequence(element) {
     const rect = element.getBoundingClientRect();
     const x = rect.left + rect.width / 2;
     const y = rect.top + rect.height / 2;
 
-    // Strategy 1: Full event sequence (works with vanilla JS listeners)
-    const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-    events.forEach(eventType => {
-      const Constructor = eventType.startsWith('pointer') ? PointerEvent : MouseEvent;
-      element.dispatchEvent(new Constructor(eventType, {
-        bubbles: true, cancelable: true, view: window,
-        clientX: x, clientY: y, button: 0
-      }));
-    });
+    const baseOpts = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: x, clientY: y,
+      screenX: x + window.screenX, screenY: y + window.screenY,
+      button: 0, buttons: 1
+    };
 
-    // Strategy 2: Native .click() — triggers jQuery handlers + onclick attributes
+    // Hover first (some frameworks need this)
+    element.dispatchEvent(new PointerEvent('pointerover', { ...baseOpts, buttons: 0 }));
+    element.dispatchEvent(new MouseEvent('mouseover', { ...baseOpts, buttons: 0 }));
+    element.dispatchEvent(new PointerEvent('pointerenter', { ...baseOpts, bubbles: false, buttons: 0 }));
+    element.dispatchEvent(new MouseEvent('mouseenter', { ...baseOpts, bubbles: false, buttons: 0 }));
+
+    // Press
+    element.dispatchEvent(new PointerEvent('pointerdown', baseOpts));
+    element.dispatchEvent(new MouseEvent('mousedown', baseOpts));
+
+    // Release
+    element.dispatchEvent(new PointerEvent('pointerup', { ...baseOpts, buttons: 0 }));
+    element.dispatchEvent(new MouseEvent('mouseup', { ...baseOpts, buttons: 0 }));
+
+    // Click
+    element.dispatchEvent(new MouseEvent('click', { ...baseOpts, buttons: 0 }));
+  }
+
+  /**
+   * Fire keyboard Space event (activates focused radios/checkboxes/buttons natively)
+   */
+  function dispatchKeyboardSpace(element) {
+    const opts = { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true };
+    element.dispatchEvent(new KeyboardEvent('keydown', opts));
+    element.dispatchEvent(new KeyboardEvent('keypress', opts));
+    element.dispatchEvent(new KeyboardEvent('keyup', opts));
+  }
+
+  /**
+   * Fire keyboard Enter event
+   */
+  function dispatchKeyboardEnter(element) {
+    const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    element.dispatchEvent(new KeyboardEvent('keydown', opts));
+    element.dispatchEvent(new KeyboardEvent('keypress', opts));
+    element.dispatchEvent(new KeyboardEvent('keyup', opts));
+  }
+
+  /**
+   * Find the <label> element associated with an input
+   */
+  function findLabelElement(input) {
+    if (input.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+      if (label) return label;
+    }
+    return input.closest('label');
+  }
+
+  /**
+   * Select a standard radio button or checkbox with maximum reliability.
+   * Uses 5 strategies in sequence, then verifies and retries if needed.
+   */
+  function selectRadioOrCheckbox(input) {
+    devLog('selectRadioOrCheckbox:', input.type, input.name, input.value?.substring(0, 30));
+
+    // Ensure visible
+    try { input.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) {}
+
+    // Strategy 1: Focus + full event sequence on input
+    try { input.focus(); } catch (_) {}
+    dispatchFullClickSequence(input);
+
+    // Strategy 2: Native .click() — handles jQuery, onclick attrs
+    try { input.click(); } catch (_) {}
+
+    // Strategy 3: Explicitly set checked + fire change/input events
+    // This is the most reliable for React (uses native setter to trigger React's onChange)
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      input.type === 'checkbox' ? HTMLInputElement.prototype : HTMLInputElement.prototype, 'checked'
+    )?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, true);
+    } else {
+      input.checked = true;
+    }
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Strategy 4: Click the associated label (triggers input via label-for association)
+    const label = findLabelElement(input);
+    if (label && label !== input) {
+      devLog('Also clicking label for input');
+      try { label.click(); } catch (_) {}
+      dispatchFullClickSequence(label);
+    }
+
+    // Strategy 5: Keyboard Space on focused input (browser native radio/checkbox toggle)
+    try {
+      input.focus();
+      dispatchKeyboardSpace(input);
+    } catch (_) {}
+
+    // Verify after a short delay
+    setTimeout(() => {
+      if (!input.checked) {
+        devWarn('Click verification FAILED — force-setting checked');
+        input.checked = true;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        try { input.click(); } catch (_) {}
+        // Try the container too
+        const container = input.closest('li, div, label, [class*="option"], [class*="answer"]');
+        if (container) {
+          try { container.click(); } catch (_) {}
+        }
+      } else {
+        devLog('Click verification OK — input.checked = true');
+      }
+    }, 150);
+  }
+
+  /**
+   * Click a custom/div-based option element with maximum reliability.
+   * For ProProfs, Google Forms, Quizizz, custom React/Angular/Vue apps, etc.
+   */
+  function clickCustomOption(element) {
+    devLog('clickCustomOption:', element.tagName, element.className?.toString()?.substring(0, 40),
+           'text:', element.textContent?.substring(0, 30));
+
+    // Ensure visible
+    try { element.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) {}
+
+    // Strategy 1: Focus + full event sequence
+    try { element.focus(); } catch (_) {}
+    dispatchFullClickSequence(element);
+
+    // Strategy 2: Native .click()
     try { element.click(); } catch (_) {}
+
+    // Strategy 3: Keyboard activation
+    try {
+      element.focus();
+      dispatchKeyboardEnter(element);
+      dispatchKeyboardSpace(element);
+    } catch (_) {}
+
+    // Strategy 4: Try touch events (mobile-optimized sites)
+    try {
+      const rect = element.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const touchOpts = { bubbles: true, cancelable: true, clientX: x, clientY: y };
+      element.dispatchEvent(new TouchEvent('touchstart', { ...touchOpts, touches: [new Touch({ identifier: 1, target: element, clientX: x, clientY: y })] }));
+      element.dispatchEvent(new TouchEvent('touchend', { ...touchOpts, touches: [] }));
+    } catch (_) {
+      // TouchEvent not supported in all contexts
+    }
+
+    // Strategy 5: Click interactive children (some sites nest the actual handler)
+    const childTargets = element.querySelectorAll(
+      'a, button, [role="radio"], [role="checkbox"], [role="option"], ' +
+      '[tabindex], span.opt_text, span[class*="text"], div[class*="text"], label'
+    );
+    for (const child of childTargets) {
+      if (child !== element) {
+        setTimeout(() => {
+          try { child.click(); } catch (_) {}
+          dispatchFullClickSequence(child);
+        }, 30);
+      }
+    }
+
+    // Strategy 6: Update ARIA attributes (for accessibility-driven UIs)
+    if (element.hasAttribute('aria-checked')) {
+      element.setAttribute('aria-checked', 'true');
+      // Uncheck siblings
+      const parent = element.parentElement;
+      if (parent) {
+        parent.querySelectorAll('[aria-checked="true"]').forEach(sib => {
+          if (sib !== element) sib.setAttribute('aria-checked', 'false');
+        });
+      }
+    }
+    if (element.hasAttribute('aria-selected')) {
+      element.setAttribute('aria-selected', 'true');
+    }
+
+    // Strategy 7: Try clicking the parent <li> or wrapper (some handlers are on parent)
+    const parentLi = element.closest('li');
+    if (parentLi && parentLi !== element) {
+      setTimeout(() => {
+        try { parentLi.click(); } catch (_) {}
+        dispatchFullClickSequence(parentLi);
+      }, 60);
+    }
+  }
+
+  // ============================================================
+  // ANSWER APPLICATION ENGINE
+  // ============================================================
+
+  function findMatchingOption(options, answer) {
+    const cleanAnswer = answer.trim();
+    const upperAnswer = cleanAnswer.toUpperCase();
+
+    // Strip common AI response prefixes: "A)", "(A)", "A.", "Option A", "Answer: A"
+    const stripped = cleanAnswer
+      .replace(/^(option|answer|choice)\s*[:=]?\s*/i, '')
+      .replace(/^[\(\[]?\s*([A-Za-z0-9])\s*[\)\]\.:\-]\s*/, '$1')
+      .trim();
+    const strippedUpper = stripped.toUpperCase();
+
+    // Direct identifier match (A, B, C, D or 1, 2, 3, 4)
+    for (const opt of options) {
+      if (opt.identifier.toUpperCase() === upperAnswer) return opt;
+      if (opt.identifier.toUpperCase() === strippedUpper) return opt;
+    }
+
+    // First non-whitespace char match
+    const firstChar = strippedUpper.charAt(0);
+    if (/^[A-Z0-9]$/.test(firstChar)) {
+      for (const opt of options) {
+        if (opt.identifier.toUpperCase() === firstChar) return opt;
+      }
+    }
+
+    // Exact text match (case-insensitive)
+    const lowerAnswer = cleanAnswer.toLowerCase();
+    for (const opt of options) {
+      if (opt.text.toLowerCase().trim() === lowerAnswer) return opt;
+    }
+
+    // Partial text match
+    for (const opt of options) {
+      const optLower = opt.text.toLowerCase().trim();
+      if (optLower.includes(lowerAnswer) || lowerAnswer.includes(optLower)) {
+        return opt;
+      }
+    }
+
+    // True/False specific
+    const tfLower = lowerAnswer.replace(/[^a-z]/g, '');
+    if (tfLower === 'true' || tfLower === 'false') {
+      for (const opt of options) {
+        if (opt.text.toLowerCase().trim() === tfLower) return opt;
+      }
+    }
+
+    return null;
   }
 
   function setInputValue(input, value) {
-    const nativeSetter =
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set ||
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    // Use native setter for React/Angular/Vue compatibility
+    const proto = input.tagName.toLowerCase() === 'textarea'
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     if (nativeSetter) nativeSetter.call(input, value);
     else input.value = value;
 
@@ -845,10 +1094,12 @@
 
   function applyAnswer(domRefs, answer) {
     const { type, options, matchItems, inputElement, isDropdown } = domRefs;
-    devLog('Applying answer:', answer, 'mode:', answerMode, 'type:', type);
+    devLog('Applying answer:', answer, 'mode:', answerMode, 'type:', type,
+           'options:', options?.length || 0);
 
     if (answerMode === 'clipboard') {
       navigator.clipboard.writeText(answer).catch(() => {});
+      devLog('Answer copied to clipboard');
       return;
     }
 
@@ -857,30 +1108,26 @@
       case 'TRUE_FALSE': {
         const matched = findMatchingOption(options, answer);
         if (!matched) {
-          devWarn('No matching option found for answer:', answer);
+          devWarn('No matching option found for answer:', answer,
+                  'available:', options.map(o => `${o.identifier}="${o.text?.substring(0, 25)}"`));
           navigator.clipboard.writeText(answer).catch(() => {});
           return;
         }
-        devLog('Matched option:', matched.identifier, matched.text?.substring(0, 40));
+        devLog('Matched option:', matched.identifier, '"' + matched.text?.substring(0, 40) + '"',
+               'isCustom:', !!matched.isCustom, 'isDropdown:', !!isDropdown);
 
         if (answerMode === 'auto') {
           if (isDropdown && matched.isSelectOption) {
+            // Dropdown: set selected index + change event
             matched.inputElement.selectedIndex = matched.optionIndex;
             matched.inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+            devLog('Dropdown selection applied');
           } else if (matched.isCustom) {
-            // For div-based options: click the container element, then try children
-            simulateClick(matched.element);
-            // Some sites have the actual clickable deeper (e.g., a nested <a> or <span>)
-            const inner = matched.element.querySelector('a, span, div, label');
-            if (inner && inner !== matched.element) {
-              setTimeout(() => simulateClick(inner), 50);
-            }
+            // Custom div-based option
+            clickCustomOption(matched.element);
           } else {
-            simulateClick(matched.inputElement);
-            if (matched.inputElement.type === 'radio' || matched.inputElement.type === 'checkbox') {
-              matched.inputElement.checked = true;
-              matched.inputElement.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            // Standard radio/checkbox
+            selectRadioOrCheckbox(matched.inputElement);
           }
         } else {
           highlightElement(matched.element, highlightDuration);
@@ -889,33 +1136,40 @@
       }
 
       case 'MULTI_SELECT': {
-        const selectedIds = answer.split(',').map(s => s.trim().toUpperCase());
+        // Parse multi-select answer: "A, C, D" or "A,C,D"
+        const selectedIds = answer.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
         let anyMatched = false;
+        devLog('Multi-select targets:', selectedIds);
+
         options.forEach(opt => {
           if (selectedIds.includes(opt.identifier)) {
             anyMatched = true;
             if (answerMode === 'auto') {
-              if (opt.isCustom) { simulateClick(opt.element); }
-              else if (!opt.inputElement.checked) {
-                simulateClick(opt.inputElement);
-                opt.inputElement.checked = true;
-                opt.inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+              if (opt.isCustom) {
+                clickCustomOption(opt.element);
+              } else if (!opt.inputElement.checked) {
+                selectRadioOrCheckbox(opt.inputElement);
               }
             } else {
               highlightElement(opt.element, highlightDuration);
             }
           }
         });
-        if (!anyMatched) navigator.clipboard.writeText(answer).catch(() => {});
+        if (!anyMatched) {
+          devWarn('No multi-select options matched:', selectedIds);
+          navigator.clipboard.writeText(answer).catch(() => {});
+        }
         break;
       }
 
       case 'MATCHING': {
         if (!matchItems || matchItems.length === 0) {
+          devWarn('No match items for MATCHING type');
           navigator.clipboard.writeText(answer).catch(() => {});
           return;
         }
         const pairs = answer.split(',').map(s => s.trim());
+        devLog('Matching pairs:', pairs);
         pairs.forEach(pair => {
           const match = pair.match(/(\d+)\s*[→\-:]\s*(.+)/);
           if (!match) return;
@@ -929,6 +1183,7 @@
                 if (answerMode === 'auto') {
                   select.selectedIndex = i;
                   select.dispatchEvent(new Event('change', { bubbles: true }));
+                  devLog('Matching select applied:', itemIndex, '→', targetValue);
                 } else { highlightElement(select, highlightDuration); }
                 break;
               }
@@ -944,6 +1199,30 @@
         if (inputElement && answerMode === 'auto') {
           inputElement.focus();
           setInputValue(inputElement, answer);
+          devLog('Text input filled');
+        } else if (answerMode === 'auto') {
+          // Try to find any text input in the container
+          const container = domRefs.container;
+          if (container) {
+            const anyInput = container.querySelector('input[type="text"], textarea, input:not([type]), [contenteditable="true"]');
+            if (anyInput) {
+              if (anyInput.getAttribute('contenteditable') === 'true') {
+                anyInput.focus();
+                anyInput.textContent = answer;
+                anyInput.dispatchEvent(new Event('input', { bubbles: true }));
+                devLog('Contenteditable filled');
+              } else {
+                anyInput.focus();
+                setInputValue(anyInput, answer);
+                devLog('Fallback text input filled');
+              }
+            } else {
+              navigator.clipboard.writeText(answer).catch(() => {});
+              devLog('No input found, copied to clipboard');
+            }
+          } else {
+            navigator.clipboard.writeText(answer).catch(() => {});
+          }
         } else {
           navigator.clipboard.writeText(answer).catch(() => {});
         }
@@ -951,6 +1230,7 @@
       }
 
       default:
+        devWarn('Unknown question type:', type);
         navigator.clipboard.writeText(answer).catch(() => {});
     }
   }
@@ -962,15 +1242,19 @@
   document.addEventListener('dblclick', async (e) => {
     if (!isActive || processing) return;
 
-    devLog('Double-click on:', e.target.tagName,
-           e.target.className?.toString()?.substring(0, 50),
-           'at y:', Math.round(e.clientY));
+    devLog('--- DOUBLE-CLICK ---');
+    devLog('Target:', e.target.tagName,
+           'class:', e.target.className?.toString()?.substring(0, 60),
+           'id:', e.target.id?.substring(0, 30),
+           'at:', Math.round(e.clientX) + ',' + Math.round(e.clientY));
 
     processing = true;
+    const startTime = Date.now();
+
     try {
       const context = await extractQuestionContext(e.target);
       if (!context) {
-        devLog('No question context found');
+        devWarn('No question context found — took', Date.now() - startTime, 'ms');
         processing = false;
         return;
       }
@@ -978,8 +1262,10 @@
       const domRefs = context._domRefs;
       delete context._domRefs;
 
-      devLog('Sending to AI:', context.type, 'images:', context.images?.length || 0,
-             'question:', context.questionText?.substring(0, 60));
+      devLog('Sending to AI:', context.type,
+             'options:', context.options?.length || 0,
+             'images:', context.images?.length || 0,
+             'question:', context.questionText?.substring(0, 80));
 
       const response = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage(
@@ -992,10 +1278,11 @@
         );
       });
 
-      devLog('AI answer:', response);
+      devLog('AI answer:', response, '— total time:', Date.now() - startTime, 'ms');
       applyAnswer(domRefs, response);
     } catch (err) {
-      devWarn('Error:', err.message);
+      devError('Error processing question:', err.message);
+      devError('Stack:', err.stack);
     } finally {
       processing = false;
     }

@@ -1,6 +1,7 @@
 // ============================================================
 // Answer Mate - Background Service Worker
 // Handles AI API calls, state management, and message routing
+// Dual mode: Cheatly Backend API + Bring Your Own Key (BYOK)
 // ============================================================
 
 // ---- Dev Mode Detection ----
@@ -14,6 +15,60 @@ function devWarn(...args) {
 }
 function devError(...args) {
   if (IS_DEV) console.error('[AnswerMate]', ...args);
+}
+
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+const CHEATLY_API_URL = 'https://cheatly.vercel.app/api/get-answer';
+
+// ============================================================
+// SESSION ID MANAGEMENT
+// ============================================================
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === 'install') {
+    const sessionId = crypto.randomUUID();
+    await chrome.storage.local.set({
+      sessionId,
+      installDate: Date.now(),
+      apiMode: 'cheatly',
+      stats: { totalRequests: 0, requestsToday: 0, lastRequestDate: null },
+      rateLimits: {
+        remaining: { minute: 10, hour: 200, day: 1000 },
+        resetAt: new Date().toISOString()
+      }
+    });
+    devLog('Extension installed. Session ID:', sessionId);
+  }
+
+  if (details.reason === 'update') {
+    // Ensure sessionId and apiMode exist after update
+    const data = await chrome.storage.local.get(['sessionId', 'apiMode', 'stats']);
+    if (!data.sessionId) {
+      await chrome.storage.local.set({ sessionId: crypto.randomUUID() });
+    }
+    if (!data.apiMode) {
+      await chrome.storage.local.set({ apiMode: 'cheatly' });
+    }
+    if (!data.stats) {
+      await chrome.storage.local.set({
+        stats: { totalRequests: 0, requestsToday: 0, lastRequestDate: null }
+      });
+    }
+  }
+});
+
+async function getSessionId() {
+  const { sessionId } = await chrome.storage.local.get('sessionId');
+  if (!sessionId) {
+    const newId = crypto.randomUUID();
+    await chrome.storage.local.set({ sessionId: newId });
+    devLog('Session ID was missing, generated:', newId);
+    return newId;
+  }
+  return sessionId;
 }
 
 // ============================================================
@@ -137,7 +192,6 @@ function buildOpenAIContent(prompt, images) {
   if (!images || images.length === 0) return prompt;
 
   const content = [];
-  // Images first for better understanding
   for (const img of images) {
     content.push({
       type: 'image_url',
@@ -153,7 +207,6 @@ function buildOpenAIContent(prompt, images) {
 
 function buildGeminiParts(prompt, images) {
   const parts = [];
-  // Gemini: system prompt + user prompt combined as text
   parts.push({ text: SYSTEM_PROMPT + '\n\n' + prompt });
   if (images && images.length > 0) {
     for (const img of images) {
@@ -172,7 +225,6 @@ function buildAnthropicContent(prompt, images) {
   if (!images || images.length === 0) return prompt;
 
   const content = [];
-  // Anthropic recommends images before text
   for (const img of images) {
     content.push({
       type: 'image',
@@ -219,9 +271,7 @@ async function resolveModel(provider, hasImages) {
   const providerConfig = AI_PROVIDERS[provider];
   const defaultModel = providerConfig.models.find(m => m.default)?.id || providerConfig.models[0].id;
 
-  // If smart switch is ON and question has images, use the vision (balanced+) model
   if (settings.smartSwitch && hasImages) {
-    // Use configured vision model if it belongs to the current provider
     if (settings.visionModel) {
       const isValidForProvider = providerConfig.models.some(m => m.id === settings.visionModel);
       if (isValidForProvider) {
@@ -229,7 +279,6 @@ async function resolveModel(provider, hasImages) {
         return settings.visionModel;
       }
     }
-    // Default: pick the "balanced" tier model
     const balanced = providerConfig.models.find(m => m.tier === 'balanced');
     if (balanced) {
       devLog('Smart switch → auto balanced:', balanced.id);
@@ -285,14 +334,25 @@ function buildPrompt(questionData) {
 }
 
 // ============================================================
-// PROCESS QUESTION
+// PROCESS QUESTION — Dual Mode (Backend API / Own Key)
 // ============================================================
 
 async function processQuestion(questionData) {
   const settings = await chrome.storage.local.get([
-    'provider', 'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic'
+    'apiMode', 'provider', 'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic'
   ]);
 
+  const apiMode = settings.apiMode || 'cheatly';
+
+  if (apiMode === 'own_key') {
+    return await processQuestionDirect(questionData, settings);
+  } else {
+    return await processQuestionViaBackend(questionData);
+  }
+}
+
+// ---- Direct API calls (BYOK mode) ----
+async function processQuestionDirect(questionData, settings) {
   const provider = settings.provider || 'openai';
   const providerConfig = AI_PROVIDERS[provider];
   if (!providerConfig) throw new Error(`Unknown provider: ${provider}`);
@@ -305,7 +365,7 @@ async function processQuestion(questionData) {
   const model = await resolveModel(provider, hasImages);
   const prompt = buildPrompt(questionData);
 
-  devLog('Processing question:', {
+  devLog('Processing (BYOK):', {
     type: questionData.type,
     textLength: questionData.questionText?.length,
     optionCount: questionData.options?.length,
@@ -318,7 +378,180 @@ async function processQuestion(questionData) {
   const answer = await providerConfig.makeRequest(apiKey, model, prompt, hasImages ? images : null);
   devLog('Answer received in', Date.now() - startTime, 'ms:', answer);
 
+  await updateUsageStats();
   return answer;
+}
+
+// ---- Backend API call (Cheatly API mode) ----
+async function processQuestionViaBackend(questionData) {
+  const sessionId = await getSessionId();
+  const prompt = buildPrompt(questionData);
+
+  const payload = {
+    question: prompt.substring(0, 2000),
+    context: questionData.questionText?.substring(0, 1000),
+    sessionId,
+    metadata: {
+      extensionVersion: chrome.runtime.getManifest().version,
+      platform: 'extension',
+      timestamp: Date.now()
+    }
+  };
+
+  devLog('Processing (Backend):', {
+    questionLength: payload.question.length,
+    contextLength: payload.context?.length,
+    sessionId: sessionId.substring(0, 8) + '...'
+  });
+
+  const startTime = Date.now();
+
+  const response = await fetchWithRetry(CHEATLY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30000)
+  });
+
+  if (!response.ok) {
+    await handleBackendError(response);
+  }
+
+  const data = await response.json();
+  devLog('Backend response in', Date.now() - startTime, 'ms:', data.answer,
+    'meta:', data.metadata);
+
+  await updateRateLimits(response.headers);
+  await updateUsageStats();
+
+  return data.answer;
+}
+
+// ============================================================
+// RETRY LOGIC (for backend API)
+// ============================================================
+
+async function fetchWithRetry(url, options, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      // Don't retry on client errors or rate limits
+      if (response.status < 500 || response.status === 429) {
+        return response;
+      }
+
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        devLog(`Retry ${attempt + 1}/${maxRetries} after ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      return response;
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw new Error('Request timed out. Please try again.');
+      }
+      if (attempt === maxRetries) {
+        if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+          throw new Error('Network error. Please check your internet connection.');
+        }
+        throw err;
+      }
+      const delay = Math.pow(2, attempt) * 1000;
+      devLog(`Fetch error, retry ${attempt + 1}/${maxRetries} after ${delay}ms:`, err.message);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw new Error('Max retries exceeded');
+}
+
+// ============================================================
+// BACKEND ERROR HANDLING
+// ============================================================
+
+async function handleBackendError(response) {
+  let errorData;
+  try {
+    errorData = await response.json();
+  } catch {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+
+  // Store rate limit info from 429 responses
+  if (response.status === 429 && errorData.limits) {
+    await chrome.storage.local.set({
+      rateLimits: {
+        remaining: errorData.limits.remaining || { minute: 0, hour: 0, day: 0 },
+        resetAt: errorData.limits.resetAt || new Date().toISOString()
+      }
+    });
+  }
+
+  const messages = {
+    400: 'Invalid request format. Please try again.',
+    401: 'Session invalid. Please reinstall the extension.',
+    403: 'Access denied. Your session may be blocked. Contact support@cheatly.com',
+    429: `Rate limit exceeded. Try again in ${errorData.retryAfter || 60} seconds.`,
+    502: 'AI service temporarily unavailable. Please try again.',
+    504: 'Request timed out. Please try again.',
+    500: 'Server error. Please try again later.'
+  };
+
+  throw new Error(messages[response.status] || errorData.error || `Request failed: ${response.status}`);
+}
+
+// ============================================================
+// RATE LIMIT TRACKING
+// ============================================================
+
+async function updateRateLimits(headers) {
+  const minute = parseInt(headers.get('X-RateLimit-Remaining-Minute') || '-1', 10);
+  const hour = parseInt(headers.get('X-RateLimit-Remaining-Hour') || '-1', 10);
+  const day = parseInt(headers.get('X-RateLimit-Remaining-Day') || '-1', 10);
+
+  // Only update if at least one header is present
+  if (minute === -1 && hour === -1 && day === -1) return;
+
+  const rateLimits = {
+    remaining: {
+      minute: minute >= 0 ? minute : 10,
+      hour: hour >= 0 ? hour : 200,
+      day: day >= 0 ? day : 1000
+    },
+    resetAt: headers.get('X-RateLimit-Reset') || new Date().toISOString()
+  };
+
+  await chrome.storage.local.set({ rateLimits });
+  devLog('Rate limits updated:', rateLimits);
+
+  // Badge warning when daily limits are low
+  if (rateLimits.remaining.day < 100) {
+    chrome.action.setBadgeText({ text: String(rateLimits.remaining.day) });
+    chrome.action.setBadgeBackgroundColor({ color: '#EF4444' });
+  } else {
+    chrome.action.setBadgeText({ text: '' });
+  }
+}
+
+// ============================================================
+// USAGE STATS
+// ============================================================
+
+async function updateUsageStats() {
+  const today = new Date().toISOString().split('T')[0];
+  const { stats = {} } = await chrome.storage.local.get('stats');
+
+  const isNewDay = stats.lastRequestDate !== today;
+
+  await chrome.storage.local.set({
+    stats: {
+      totalRequests: (stats.totalRequests || 0) + 1,
+      requestsToday: isNewDay ? 1 : (stats.requestsToday || 0) + 1,
+      lastRequestDate: today
+    }
+  });
 }
 
 // ============================================================
@@ -391,7 +624,6 @@ chrome.commands.onCommand.addListener(async (command) => {
             target: { tabId: tab.id },
             files: ['content.js']
           });
-          // Wait for script to initialize, then send state
           setTimeout(async () => {
             try {
               await chrome.tabs.sendMessage(tab.id, {
