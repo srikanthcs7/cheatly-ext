@@ -1,15 +1,23 @@
 // ============================================================
 // Answer Mate - Content Script
-// Detects questions, extracts context, applies answers stealthily
+// Detects questions, extracts context + images, applies answers
 // ============================================================
 
 (function () {
-  // Prevent multiple injections
   if (window.__answerMateLoaded) return;
   window.__answerMateLoaded = true;
 
+  // ---- Dev Mode Detection ----
+  const IS_DEV = !('update_url' in chrome.runtime.getManifest());
+  function devLog(...args) {
+    if (IS_DEV) console.log('[AnswerMate:Content]', ...args);
+  }
+  function devWarn(...args) {
+    if (IS_DEV) console.warn('[AnswerMate:Content]', ...args);
+  }
+
   let isActive = false;
-  let answerMode = 'auto'; // 'auto' | 'highlight' | 'clipboard'
+  let answerMode = 'auto';
   let highlightDuration = 4000;
   let processing = false;
 
@@ -19,7 +27,6 @@
     highlightDuration = result.highlightDuration || 4000;
   });
 
-  // Listen for settings changes
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.answerMode) answerMode = changes.answerMode.newValue;
     if (changes.highlightDuration) highlightDuration = changes.highlightDuration.newValue;
@@ -32,6 +39,7 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'TOGGLE_STATE') {
       isActive = message.active;
+      devLog('State toggled:', isActive ? 'ACTIVE' : 'INACTIVE');
       sendResponse({ ok: true });
     }
     if (message.type === 'GET_CONTENT_STATE') {
@@ -39,26 +47,220 @@
     }
   });
 
-  // Check initial state
   chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
-    if (response) isActive = response.active;
+    if (response) {
+      isActive = response.active;
+      devLog('Initial state:', isActive ? 'ACTIVE' : 'INACTIVE');
+    }
   });
+
+  // ============================================================
+  // IMAGE EXTRACTION ENGINE
+  // ============================================================
+
+  const MAX_IMAGE_DIMENSION = 1568; // Anthropic's limit, safe for all providers
+  const MIN_IMAGE_SIZE = 30;        // Skip tiny icons/bullets
+  const MAX_IMAGES_PER_QUESTION = 5;
+
+  /**
+   * Convert an <img> element to base64, resizing if needed
+   */
+  function imageElementToBase64(img) {
+    try {
+      const canvas = document.createElement('canvas');
+      let width = img.naturalWidth || img.width;
+      let height = img.naturalHeight || img.height;
+
+      if (width === 0 || height === 0) return null;
+
+      // Resize if too large (keeps under 5MB for Anthropic)
+      if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+        const ratio = Math.min(MAX_IMAGE_DIMENSION / width, MAX_IMAGE_DIMENSION / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Use JPEG for photos (smaller), PNG for diagrams/screenshots
+      const isLikelyPhoto = width > 400 && height > 400;
+      const format = isLikelyPhoto ? 'image/jpeg' : 'image/png';
+      const quality = isLikelyPhoto ? 0.85 : undefined;
+
+      const dataUrl = canvas.toDataURL(format, quality);
+      const base64 = dataUrl.split(',')[1];
+      const mimeType = dataUrl.split(';')[0].split(':')[1];
+
+      devLog('Image converted:', width, 'x', height, mimeType, `(${Math.round(base64.length * 0.75 / 1024)}KB)`);
+      return { data: base64, mimeType };
+    } catch (e) {
+      // CORS error — will try background proxy
+      devWarn('Canvas CORS error for image, will proxy:', img.src?.substring(0, 80));
+      return null;
+    }
+  }
+
+  /**
+   * Fetch an image via the background script (bypasses CORS)
+   */
+  async function fetchImageViaProxy(url) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'FETCH_IMAGE', url }, (resp) => {
+        if (chrome.runtime.lastError || !resp?.success) {
+          resolve(null);
+          return;
+        }
+        resolve({ data: resp.data, mimeType: resp.mimeType });
+      });
+    });
+  }
+
+  /**
+   * Convert a <canvas> element to base64
+   */
+  function canvasToBase64(canvas) {
+    try {
+      if (canvas.width < MIN_IMAGE_SIZE || canvas.height < MIN_IMAGE_SIZE) return null;
+      const dataUrl = canvas.toDataURL('image/png');
+      return {
+        data: dataUrl.split(',')[1],
+        mimeType: 'image/png'
+      };
+    } catch (e) {
+      devWarn('Canvas export failed (tainted)');
+      return null;
+    }
+  }
+
+  /**
+   * Convert an SVG element to base64 image
+   */
+  function svgToBase64(svgElement) {
+    try {
+      const bbox = svgElement.getBoundingClientRect();
+      if (bbox.width < MIN_IMAGE_SIZE || bbox.height < MIN_IMAGE_SIZE) return null;
+
+      const serializer = new XMLSerializer();
+      const svgString = serializer.serializeToString(svgElement);
+      const base64 = btoa(unescape(encodeURIComponent(svgString)));
+      return { data: base64, mimeType: 'image/svg+xml' };
+    } catch (e) {
+      devWarn('SVG serialization failed');
+      return null;
+    }
+  }
+
+  /**
+   * Check if an image element is meaningful (not a tiny icon/spacer)
+   */
+  function isSignificantImage(img) {
+    const width = img.naturalWidth || img.width || 0;
+    const height = img.naturalHeight || img.height || 0;
+
+    // Too small — likely an icon, bullet, or spacer
+    if (width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE) return false;
+
+    // Check for common decorative patterns
+    const src = (img.src || '').toLowerCase();
+    if (src.includes('spacer') || src.includes('pixel') || src.includes('blank') ||
+        src.includes('icon') || src.includes('logo') || src.includes('avatar') ||
+        src.includes('emoji') || src.includes('favicon')) return false;
+
+    // Role presentation means decorative
+    if (img.getAttribute('role') === 'presentation') return false;
+
+    // Very small with empty alt = decorative
+    if (img.alt === '' && (width < 50 || height < 50)) return false;
+
+    return true;
+  }
+
+  /**
+   * Extract all meaningful images from a question container
+   * Returns array of { data: base64, mimeType: string }
+   */
+  async function extractImages(container) {
+    const images = [];
+
+    // 1. <img> elements
+    const imgElements = container.querySelectorAll('img');
+    for (const img of imgElements) {
+      if (images.length >= MAX_IMAGES_PER_QUESTION) break;
+      if (!isSignificantImage(img)) continue;
+
+      // Try direct canvas conversion first (fast, no network)
+      let result = imageElementToBase64(img);
+
+      // If CORS blocked, proxy through background script
+      if (!result && img.src && (img.src.startsWith('http://') || img.src.startsWith('https://'))) {
+        result = await fetchImageViaProxy(img.src);
+      }
+
+      // Handle data: URIs directly
+      if (!result && img.src && img.src.startsWith('data:')) {
+        const match = img.src.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          result = { data: match[2], mimeType: match[1] };
+        }
+      }
+
+      if (result) images.push(result);
+    }
+
+    // 2. <canvas> elements (used by some dynamic quiz tools)
+    const canvasElements = container.querySelectorAll('canvas');
+    for (const canvas of canvasElements) {
+      if (images.length >= MAX_IMAGES_PER_QUESTION) break;
+      const result = canvasToBase64(canvas);
+      if (result) images.push(result);
+    }
+
+    // 3. <svg> elements (inline diagrams)
+    const svgElements = container.querySelectorAll('svg');
+    for (const svg of svgElements) {
+      if (images.length >= MAX_IMAGES_PER_QUESTION) break;
+      const bbox = svg.getBoundingClientRect();
+      // Only significant SVGs (skip small icons)
+      if (bbox.width >= 60 && bbox.height >= 60) {
+        const result = svgToBase64(svg);
+        if (result) images.push(result);
+      }
+    }
+
+    // 4. Elements with background-image (sometimes used for question images)
+    const allElements = container.querySelectorAll('*');
+    for (const el of allElements) {
+      if (images.length >= MAX_IMAGES_PER_QUESTION) break;
+      const bg = getComputedStyle(el).backgroundImage;
+      if (bg && bg !== 'none' && bg.startsWith('url(')) {
+        const urlMatch = bg.match(/url\(["']?(https?:\/\/[^"')]+)["']?\)/);
+        if (urlMatch) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width >= 60 && rect.height >= 60) {
+            const result = await fetchImageViaProxy(urlMatch[1]);
+            if (result) images.push(result);
+          }
+        }
+      }
+    }
+
+    devLog('Extracted', images.length, 'images from question container');
+    return images;
+  }
 
   // ============================================================
   // QUESTION DETECTION ENGINE
   // ============================================================
 
-  /**
-   * Find the label text associated with an input element
-   */
   function findLabelForInput(input) {
-    // Method 1: <label for="id">
     if (input.id) {
       const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
       if (label) return label.textContent.trim();
     }
 
-    // Method 2: Parent <label>
     const parentLabel = input.closest('label');
     if (parentLabel) {
       const clone = parentLabel.cloneNode(true);
@@ -67,7 +269,6 @@
       if (text) return text;
     }
 
-    // Method 3: Adjacent text / sibling elements
     const parent = input.parentElement;
     if (parent) {
       const clone = parent.cloneNode(true);
@@ -76,7 +277,6 @@
       if (text && text.length < 500) return text;
     }
 
-    // Method 4: aria-label / aria-labelledby
     if (input.getAttribute('aria-label')) return input.getAttribute('aria-label');
     const labelledBy = input.getAttribute('aria-labelledby');
     if (labelledBy) {
@@ -84,7 +284,6 @@
       if (labelEl) return labelEl.textContent.trim();
     }
 
-    // Method 5: Next sibling text
     let sibling = input.nextSibling;
     while (sibling) {
       if (sibling.nodeType === Node.TEXT_NODE && sibling.textContent.trim()) {
@@ -100,9 +299,6 @@
     return null;
   }
 
-  /**
-   * Score an element as a potential question container
-   */
   function scoreContainer(element) {
     let score = 0;
     const tag = element.tagName.toLowerCase();
@@ -110,7 +306,6 @@
     const id = (element.id || '').toLowerCase();
     const role = (element.getAttribute('role') || '').toLowerCase();
 
-    // Input elements present
     const radios = element.querySelectorAll('input[type="radio"]');
     const checkboxes = element.querySelectorAll('input[type="checkbox"]');
     const selects = element.querySelectorAll('select');
@@ -121,38 +316,33 @@
     if (radios.length >= 2) score += 3;
     if (checkboxes.length >= 2) score += 2;
 
-    // Question-like class/id names
     const namePattern = /question|quiz|problem|item|prompt|assessment|mcq|answer-group|response/;
     if (namePattern.test(cls)) score += 5;
     if (namePattern.test(id)) score += 4;
 
-    // Semantic roles
     if (role === 'radiogroup' || role === 'group') score += 4;
     if (tag === 'fieldset') score += 3;
 
-    // Has question text + inputs (strong signal)
     const hasTextEl = element.querySelector('p, span, label, h1, h2, h3, h4, h5, h6, legend, .question-text');
     if (hasTextEl && totalInputs > 0) score += 3;
 
-    // Text length scoring
+    // Images in container boost score (question likely has visual component)
+    const hasImages = element.querySelector('img, canvas, svg');
+    if (hasImages && totalInputs > 0) score += 2;
+
     const textLen = element.textContent.trim().length;
     if (textLen >= 20 && textLen <= 3000) score += 2;
     if (textLen > 5000) score -= 3;
     if (textLen < 10) score -= 5;
 
-    // Penalize body/html/main containers
     if (['body', 'html', 'main', 'header', 'footer', 'nav'].includes(tag)) score -= 10;
 
-    // Penalize very broad containers
     const childQuestions = element.querySelectorAll('[class*="question"], [class*="quiz"], [class*="problem"]');
     if (childQuestions.length > 1) score -= 3;
 
     return score;
   }
 
-  /**
-   * Find the question container from a clicked element
-   */
   function findQuestionContainer(element) {
     let current = element;
     let bestContainer = null;
@@ -165,13 +355,11 @@
         maxScore = score;
         bestContainer = current;
       }
-      // Stop if we found a very strong match
       if (score >= 10) break;
       current = current.parentElement;
       depth++;
     }
 
-    // Fallback: use a reasonable ancestor
     if (!bestContainer || maxScore < 2) {
       bestContainer = element.closest('fieldset, [role="radiogroup"], [role="group"]') ||
         element.closest('[class*="question"]') ||
@@ -183,9 +371,6 @@
     return bestContainer;
   }
 
-  /**
-   * Find a reasonable ancestor element that could be a question
-   */
   function findReasonableAncestor(element) {
     let current = element;
     let depth = 0;
@@ -198,7 +383,6 @@
       current = current.parentElement;
       depth++;
     }
-    // Last resort: go up 3 levels from click target
     current = element;
     for (let i = 0; i < 5 && current && current !== document.body; i++) {
       current = current.parentElement;
@@ -206,11 +390,7 @@
     return current || element;
   }
 
-  /**
-   * Extract the question text from a container
-   */
   function extractQuestionText(container) {
-    // Strategy 1: Look for explicit question text elements
     const questionSelectors = [
       '.question-text', '.question_text', '.questionText',
       '.question-title', '.question_title',
@@ -228,7 +408,6 @@
       }
     }
 
-    // Strategy 2: Find the longest text block before any inputs
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT);
     let questionParts = [];
     let foundInput = false;
@@ -254,22 +433,16 @@
       return questionParts.join(' ').trim();
     }
 
-    // Strategy 3: Get all text content excluding option texts
     const clone = container.cloneNode(true);
-    // Remove elements that are likely options
     clone.querySelectorAll('label, [class*="answer"], [class*="option"], [class*="choice"]').forEach(el => {
       el.remove();
     });
     const remaining = clone.textContent.trim();
     if (remaining.length > 5) return remaining;
 
-    // Fallback: full container text (truncated)
     return container.textContent.trim().substring(0, 2000);
   }
 
-  /**
-   * Get direct text content of an element (not children)
-   */
   function getDirectText(element) {
     let text = '';
     for (const child of element.childNodes) {
@@ -280,9 +453,6 @@
     return text.trim();
   }
 
-  /**
-   * Detect if options represent True/False
-   */
   function isTrueFalse(options) {
     if (options.length !== 2) return false;
     const texts = options.map(o => o.text.toLowerCase().trim());
@@ -291,11 +461,7 @@
       (texts.includes('correct') && texts.includes('incorrect'));
   }
 
-  /**
-   * Extract options and detect question type from a container
-   */
   function extractOptionsAndType(container) {
-    // Strategy 1: Radio buttons → MCQ or True/False
     const radios = container.querySelectorAll('input[type="radio"]');
     if (radios.length >= 2) {
       const options = [];
@@ -307,7 +473,6 @@
         nameGroups[name].push(radio);
       });
 
-      // Use the largest radio group
       const largestGroup = Object.values(nameGroups).sort((a, b) => b.length - a.length)[0];
 
       largestGroup.forEach((radio, index) => {
@@ -326,7 +491,6 @@
       return { type, options };
     }
 
-    // Strategy 2: Checkboxes → Multi-select
     const checkboxes = container.querySelectorAll('input[type="checkbox"]');
     if (checkboxes.length >= 2) {
       const options = [];
@@ -344,7 +508,6 @@
       return { type: 'MULTI_SELECT', options };
     }
 
-    // Strategy 3: Multiple selects → Matching
     const selects = container.querySelectorAll('select');
     if (selects.length >= 2) {
       const matchItems = [];
@@ -364,7 +527,6 @@
       return { type: 'MATCHING', options: [], matchItems };
     }
 
-    // Strategy 4: Single select → could be MCQ in dropdown form
     if (selects.length === 1) {
       const select = selects[0];
       const options = Array.from(select.options)
@@ -383,7 +545,6 @@
       }
     }
 
-    // Strategy 5: Text inputs → Fill in the blank / Short answer
     const textInputs = container.querySelectorAll(
       'input[type="text"], input[type="number"], input:not([type]):not([role="combobox"]), textarea'
     );
@@ -397,7 +558,6 @@
       };
     }
 
-    // Strategy 6: Look for clickable div-based options (custom UI)
     const clickableOptions = container.querySelectorAll(
       '[role="radio"], [role="checkbox"], [role="option"], [data-testid*="answer"], [data-testid*="option"]'
     );
@@ -417,14 +577,13 @@
       return { type, options };
     }
 
-    // Fallback: treat as short answer
     return { type: 'SHORT_ANSWER', options: [] };
   }
 
   /**
-   * Extract full question context from a double-click target
+   * Extract full question context including images
    */
-  function extractQuestionContext(targetElement) {
+  async function extractQuestionContext(targetElement) {
     const container = findQuestionContainer(targetElement);
     if (!container) return null;
 
@@ -432,6 +591,16 @@
     if (!questionText || questionText.length < 3) return null;
 
     const optionData = extractOptionsAndType(container);
+
+    // Extract images from the question container
+    const images = await extractImages(container);
+
+    devLog('Question extracted:', {
+      type: optionData.type,
+      textLength: questionText.length,
+      options: optionData.options?.length || 0,
+      images: images.length
+    });
 
     return {
       questionText,
@@ -446,7 +615,7 @@
         identifier: m.identifier,
         selectOptions: m.selectOptions
       })),
-      // Keep DOM references for answer application (not sent to background)
+      images, // base64 images sent to background
       _domRefs: {
         container,
         options: optionData.options,
@@ -462,30 +631,23 @@
   // ANSWER APPLICATION ENGINE
   // ============================================================
 
-  /**
-   * Find the best matching option for an AI answer
-   */
   function findMatchingOption(options, answer) {
     const cleanAnswer = answer.trim().toUpperCase();
 
-    // Direct identifier match (A, B, C, D or 1, 2, 3, 4)
     for (const opt of options) {
       if (opt.identifier.toUpperCase() === cleanAnswer) return opt;
     }
 
-    // Match by first character
     const firstChar = cleanAnswer.charAt(0);
     for (const opt of options) {
       if (opt.identifier.toUpperCase() === firstChar) return opt;
     }
 
-    // For True/False
     const lowerAnswer = answer.trim().toLowerCase();
     for (const opt of options) {
       if (opt.text.toLowerCase().trim() === lowerAnswer) return opt;
     }
 
-    // Fuzzy text match
     for (const opt of options) {
       if (opt.text.toLowerCase().includes(lowerAnswer) || lowerAnswer.includes(opt.text.toLowerCase())) {
         return opt;
@@ -495,9 +657,6 @@
     return null;
   }
 
-  /**
-   * Simulate natural click on an element
-   */
   function simulateClick(element) {
     const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
     const rect = element.getBoundingClientRect();
@@ -517,11 +676,7 @@
     });
   }
 
-  /**
-   * Set input value with proper event dispatch (works with React/Angular/Vue)
-   */
   function setInputValue(input, value) {
-    // Use native setter to bypass framework wrappers
     const nativeSetter =
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set ||
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -532,15 +687,11 @@
       input.value = value;
     }
 
-    // Dispatch events frameworks listen for
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
   }
 
-  /**
-   * Apply subtle highlight to an element (stealth mode)
-   */
   function highlightElement(element, duration) {
     const originalOutline = element.style.outline;
     const originalOutlineOffset = element.style.outlineOffset;
@@ -560,11 +711,10 @@
     }, duration);
   }
 
-  /**
-   * Apply the answer based on current mode
-   */
   function applyAnswer(domRefs, answer) {
     const { type, options, matchItems, inputElement, isDropdown } = domRefs;
+
+    devLog('Applying answer:', answer, 'mode:', answerMode, 'type:', type);
 
     if (answerMode === 'clipboard') {
       navigator.clipboard.writeText(answer).catch(() => {});
@@ -576,10 +726,12 @@
       case 'TRUE_FALSE': {
         const matched = findMatchingOption(options, answer);
         if (!matched) {
-          // Fallback to clipboard
+          devWarn('No matching option found for answer:', answer);
           navigator.clipboard.writeText(answer).catch(() => {});
           return;
         }
+
+        devLog('Matched option:', matched.identifier, matched.text);
 
         if (answerMode === 'auto') {
           if (isDropdown && matched.isSelectOption) {
@@ -633,7 +785,6 @@
           return;
         }
 
-        // Parse "1→C, 2→A, 3→B" or "1-C, 2-A, 3-B"
         const pairs = answer.split(',').map(s => s.trim());
         pairs.forEach(pair => {
           const match = pair.match(/(\d+)\s*[→\-:]\s*(.+)/);
@@ -643,7 +794,6 @@
 
           if (itemIndex >= 0 && itemIndex < matchItems.length) {
             const select = matchItems[itemIndex].inputElement;
-            // Find matching option in dropdown
             for (let i = 0; i < select.options.length; i++) {
               if (select.options[i].text.trim().toLowerCase().includes(targetValue.toLowerCase()) ||
                 targetValue.toLowerCase().includes(select.options[i].text.trim().toLowerCase())) {
@@ -685,17 +835,24 @@
   document.addEventListener('dblclick', async (e) => {
     if (!isActive || processing) return;
 
-    // Don't prevent default - let normal double-click behavior happen
-    const context = extractQuestionContext(e.target);
-    if (!context) return;
+    devLog('Double-click detected on:', e.target.tagName, e.target.className?.toString()?.substring(0, 50));
 
+    // Extract context (now async due to image extraction)
     processing = true;
 
-    // Store DOM refs locally (they can't be serialized for messaging)
-    const domRefs = context._domRefs;
-    delete context._domRefs;
-
     try {
+      const context = await extractQuestionContext(e.target);
+      if (!context) {
+        devLog('No question context found at click target');
+        processing = false;
+        return;
+      }
+
+      const domRefs = context._domRefs;
+      delete context._domRefs;
+
+      devLog('Sending question to AI:', context.type, 'with', context.images?.length || 0, 'images');
+
       const response = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage(
           { type: 'PROCESS_QUESTION', data: context },
@@ -710,12 +867,15 @@
         );
       });
 
+      devLog('AI response:', response);
       applyAnswer(domRefs, response);
     } catch (err) {
-      console.debug('[AM]', err.message);
+      devWarn('Error processing question:', err.message);
     } finally {
       processing = false;
     }
   }, true);
+
+  devLog('Content script loaded. Dev mode:', IS_DEV);
 
 })();

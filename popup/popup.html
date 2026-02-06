@@ -114,9 +114,31 @@
 
       <div class="section model-info">
         <div class="info-card" id="modelInfo">
-          <p class="info-title">GPT-4o Mini</p>
-          <p class="info-desc">Fast and cost-effective. Best for most question types.</p>
+          <p class="info-title">GPT-4.1 Nano</p>
+          <p class="info-desc">Fastest and most cost-effective. Great for text-only questions.</p>
         </div>
+      </div>
+
+      <!-- Smart Model Switching -->
+      <div class="section">
+        <div class="switch-row">
+          <div class="switch-info">
+            <label class="section-label" style="margin-bottom:0">Smart Switch</label>
+            <small class="help-text">Auto-upgrade to powerful model for image questions</small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="smartSwitch">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Vision Model (shown when smart switch is on) -->
+      <div class="section" id="visionModelSection" style="display:none">
+        <label class="section-label">Vision Model (for images)</label>
+        <select id="visionModelSelect" class="select">
+          <!-- Populated dynamically -->
+        </select>
       </div>
 
       <!-- Provider-specific API key links -->
@@ -147,6 +169,17 @@
           <li>Matching</li>
           <li>Short Answer</li>
           <li>Essay Questions</li>
+          <li>Image/Diagram-based Questions</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h3>Vision Support</h3>
+        <ul class="help-list">
+          <li>Auto-detects images, diagrams, charts in questions</li>
+          <li>Sends visuals to AI for accurate answers</li>
+          <li>Smart Switch auto-upgrades model for image questions</li>
+          <li>Works with screenshots, graphs, code snippets</li>
         </ul>
       </div>
 
