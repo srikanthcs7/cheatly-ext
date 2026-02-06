@@ -122,6 +122,9 @@ async function init() {
     });
   }
 
+  // Set version from manifest
+  $('#version').textContent = 'v' + chrome.runtime.getManifest().version;
+
   setupEventListeners();
 }
 

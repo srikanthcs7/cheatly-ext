@@ -45,9 +45,6 @@
       devLog('State toggled:', isActive ? 'ACTIVE' : 'INACTIVE');
       sendResponse({ ok: true });
     }
-    if (message.type === 'GET_CONTENT_STATE') {
-      sendResponse({ active: isActive });
-    }
   });
 
   chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {

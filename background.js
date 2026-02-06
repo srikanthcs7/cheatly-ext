@@ -102,7 +102,8 @@ const AI_PROVIDERS = {
           ],
           temperature,
           max_tokens: 1024
-        })
+        }),
+        signal: AbortSignal.timeout(30000)
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -135,7 +136,8 @@ const AI_PROVIDERS = {
             temperature,
             maxOutputTokens: 1024
           }
-        })
+        }),
+        signal: AbortSignal.timeout(30000)
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -172,7 +174,8 @@ const AI_PROVIDERS = {
           temperature,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userContent }]
-        })
+        }),
+        signal: AbortSignal.timeout(30000)
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -811,12 +814,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message.type === 'GET_ACTIVE_TAB') {
-    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-      sendResponse({ tabId: tab?.id });
-    });
-    return true;
-  }
 });
 
 // ============================================================
