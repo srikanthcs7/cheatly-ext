@@ -50,6 +50,11 @@ const visionModelSelect = $('#visionModelSelect');
 const byokModelsSection = $('#byokModelsSection');
 const quizsolveModelsSection = $('#quizsolveModelsSection');
 const rateLimitsSection = $('#rateLimitsSection');
+const featureHighlightToggle = $('#featureHighlight');
+const featureRephraseToggle = $('#featureRephrase');
+const featureDrawRegionToggle = $('#featureDrawRegion');
+const featureSnapItToggle = $('#featureSnapIt');
+const modalSizeSelect = $('#modalSize');
 
 // ---- Initialization ----
 async function init() {
@@ -68,7 +73,9 @@ async function init() {
     'provider', 'model', 'answerMode', 'highlightDuration',
     'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic',
     'smartSwitch', 'visionModel', 'apiMode',
-    'stats', 'rateLimits', 'sessionId'
+    'stats', 'rateLimits', 'sessionId',
+    'featureHighlight', 'featureRephrase', 'featureDrawRegion',
+    'featureSnapIt', 'modalSize'
   ]);
 
   // API Mode
@@ -105,6 +112,13 @@ async function init() {
   if (settings.visionModel && visionModelSelect.querySelector(`option[value="${settings.visionModel}"]`)) {
     visionModelSelect.value = settings.visionModel;
   }
+
+  // Feature toggles
+  featureHighlightToggle.checked = !!settings.featureHighlight;
+  featureRephraseToggle.checked = !!settings.featureRephrase;
+  featureDrawRegionToggle.checked = !!settings.featureDrawRegion;
+  featureSnapItToggle.checked = !!settings.featureSnapIt;
+  if (settings.modalSize) modalSizeSelect.value = settings.modalSize;
 
   // Usage stats
   updateUsageDisplay(settings.stats, settings.rateLimits);
@@ -213,6 +227,27 @@ function setupEventListeners() {
     const val = parseInt(highlightDuration.value);
     highlightDurationValue.textContent = (val / 1000) + 's';
     chrome.storage.local.set({ highlightDuration: val });
+  });
+
+  // Feature toggles
+  featureHighlightToggle.addEventListener('change', () => {
+    chrome.storage.local.set({ featureHighlight: featureHighlightToggle.checked });
+  });
+
+  featureRephraseToggle.addEventListener('change', () => {
+    chrome.storage.local.set({ featureRephrase: featureRephraseToggle.checked });
+  });
+
+  featureDrawRegionToggle.addEventListener('change', () => {
+    chrome.storage.local.set({ featureDrawRegion: featureDrawRegionToggle.checked });
+  });
+
+  featureSnapItToggle.addEventListener('change', () => {
+    chrome.storage.local.set({ featureSnapIt: featureSnapItToggle.checked });
+  });
+
+  modalSizeSelect.addEventListener('change', () => {
+    chrome.storage.local.set({ modalSize: modalSizeSelect.value });
   });
 
   // Copy session ID

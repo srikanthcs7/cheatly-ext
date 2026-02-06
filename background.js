@@ -266,6 +266,8 @@ CRITICAL RULES:
 - Just the raw answer, nothing else
 - For multiple choice, ONLY output the letter/number, never the full option text`;
 
+const REPHRASE_PROMPT = `Rephrase the following text in a clear, concise way. Maintain the original meaning but improve clarity and readability. Output ONLY the rephrased text, nothing else.`;
+
 const EXPLANATION_PROMPT = `You are a helpful tutor. Analyze the question (and any attached images/diagrams) and provide both the correct answer AND a clear explanation.
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
@@ -431,6 +433,56 @@ async function processExplanation(questionData) {
 
   await updateUsageStats();
   return { answer, explanation };
+}
+
+// ============================================================
+// PROCESS REPHRASE — Returns rephrased text
+// ============================================================
+
+async function processRephrase(data) {
+  const settings = await chrome.storage.local.get([
+    'apiMode', 'provider', 'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic'
+  ]);
+
+  const apiMode = settings.apiMode || 'quizsolve';
+  const prompt = REPHRASE_PROMPT + '\n\nText: ' + data.text;
+  let result;
+
+  if (apiMode === 'own_key') {
+    const provider = settings.provider || 'openai';
+    const providerConfig = AI_PROVIDERS[provider];
+    if (!providerConfig) throw new Error(`Unknown provider: ${provider}`);
+    const apiKey = settings[`apiKey_${provider}`];
+    if (!apiKey) throw new Error(`No API key set for ${providerConfig.name}.`);
+    const model = await resolveModel(provider, false);
+    result = await providerConfig.makeRequest(apiKey, model, prompt, null, 0.4);
+  } else {
+    const sessionId = await getSessionId();
+    const payload = {
+      question: prompt.substring(0, 2000),
+      context: data.text.substring(0, 500),
+      sessionId,
+      metadata: {
+        extensionVersion: chrome.runtime.getManifest().version,
+        platform: 'extension',
+        type: 'rephrase',
+        timestamp: Date.now()
+      }
+    };
+    const response = await fetchWithRetry(QUIZSOLVE_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok) await handleBackendError(response);
+    const respData = await response.json();
+    result = respData.answer;
+  }
+
+  await updateUsageStats();
+  devLog('Rephrase result:', result?.substring(0, 80));
+  return result;
 }
 
 // ============================================================
@@ -850,6 +902,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(answer => sendResponse({ success: true, answer }))
       .catch(err => {
         devError('Process question error:', err.message);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'CAPTURE_TAB') {
+    chrome.tabs.captureVisibleTab(null, { format: 'png' })
+      .then(dataUrl => sendResponse({ success: true, dataUrl }))
+      .catch(err => {
+        devError('Capture tab error:', err.message);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'PROCESS_REPHRASE') {
+    processRephrase(message.data)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(err => {
+        devError('Rephrase error:', err.message);
         sendResponse({ success: false, error: err.message });
       });
     return true;

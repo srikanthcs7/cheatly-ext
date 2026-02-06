@@ -30,9 +30,32 @@
     highlightDuration = result.highlightDuration || 4000;
   });
 
+  // Feature flags (configurable, all off by default)
+  let featureHighlight = false;
+  let featureRephrase = false;
+  let featureDrawRegion = false;
+  let featureSnapIt = false;
+  let modalSize = 'small'; // 'small' | 'medium' | 'large'
+
+  chrome.storage.local.get([
+    'featureHighlight', 'featureRephrase', 'featureDrawRegion',
+    'featureSnapIt', 'modalSize'
+  ], (result) => {
+    featureHighlight = result.featureHighlight || false;
+    featureRephrase = result.featureRephrase || false;
+    featureDrawRegion = result.featureDrawRegion || false;
+    featureSnapIt = result.featureSnapIt || false;
+    modalSize = result.modalSize || 'small';
+  });
+
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.answerMode) answerMode = changes.answerMode.newValue;
     if (changes.highlightDuration) highlightDuration = changes.highlightDuration.newValue;
+    if (changes.featureHighlight) featureHighlight = changes.featureHighlight.newValue;
+    if (changes.featureRephrase) featureRephrase = changes.featureRephrase.newValue;
+    if (changes.featureDrawRegion) featureDrawRegion = changes.featureDrawRegion.newValue;
+    if (changes.featureSnapIt) featureSnapIt = changes.featureSnapIt.newValue;
+    if (changes.modalSize) modalSize = changes.modalSize.newValue;
   });
 
   // ============================================================
@@ -249,6 +272,40 @@
     '.question-container',
     // Edulastic
     '[class*="question-content"]',
+    // IndiaBix, Sawaal, GK Today, etc.
+    '.bix-div-container',
+    '.questiondivborder',
+    '.single-question',
+    '.quiz-question-wrapper',
+    // Testbook, Gradeup
+    '[class*="questionPalette"]',
+    '[class*="test-question"]',
+    '.question-pnl',
+    // Chegg, CourseHero
+    '[class*="QuestionBody"]',
+    '[data-testid="question"]',
+    '[class*="questionContainer"]',
+    // Khan Academy
+    '.perseus-renderer',
+    '.framework-perseus',
+    // McGraw Hill Connect
+    '.question_content',
+    '.assessment-item',
+    // Cengage, Pearson
+    '[class*="exercise-item"]',
+    '[class*="questionPanel"]',
+    '[class*="QuestionPanel"]',
+    // Wiley, Mastering
+    '.prob-body',
+    '.exercise-body',
+    // Socrative, Mentimeter
+    '[class*="QuizQuestion"]',
+    '[class*="quiz_question"]',
+    // Generic LMS patterns
+    '[class*="assessment-question"]',
+    '[class*="exam-question"]',
+    '[class*="test-item"]',
+    '[class*="testItem"]',
     // Generic patterns
     '[class*="question-item"]',
     '[class*="questionItem"]',
@@ -263,6 +320,8 @@
     '[data-question]',
     '[data-question-id]',
     '[data-qid]',
+    // Fieldset-based questions
+    'fieldset',
   ];
 
   function findAllQuestionContainers() {
@@ -379,27 +438,58 @@
     if (radios.length >= 2) score += 3;
     if (checkboxes.length >= 2) score += 2;
 
-    const namePattern = /question|quiz|problem|item|prompt|assessment|mcq|answer-group|response|ques_marg/;
+    // Strong signal: radio buttons within a named group
+    if (radios.length >= 2) {
+      const names = new Set();
+      radios.forEach(r => names.add(r.name));
+      if (names.size === 1) score += 2; // single radio group = likely one question
+    }
+
+    const namePattern = /question|quiz|problem|item|prompt|assessment|mcq|answer-group|response|ques_marg|bix-div|questiondivborder/;
     if (namePattern.test(cls)) score += 5;
     if (namePattern.test(id)) score += 4;
+
+    // Data attributes that indicate question containers
+    if (element.dataset.question || element.dataset.questionId || element.dataset.qid ||
+        element.dataset.testid?.includes('question')) score += 5;
 
     if (role === 'radiogroup' || role === 'group') score += 4;
     if (tag === 'fieldset') score += 3;
 
-    const hasTextEl = element.querySelector('p, span, label, h1, h2, h3, h4, h5, h6, legend, .question-text, .question_text');
+    // Has both question text AND answer options (strong signal)
+    const hasTextEl = element.querySelector('p, span, label, h1, h2, h3, h4, h5, h6, legend, .question-text, .question_text, .qtext');
     if (hasTextEl && (totalInputs > 0 || divOptions.length >= 2)) score += 3;
+
+    // Contains a numbered question pattern (e.g., "Q1.", "1.", "Question 1")
+    const firstText = element.textContent.trim().substring(0, 100);
+    if (/^(?:Q\.?\s*\d+|Question\s+\d+|\d+[\.\)]\s)/i.test(firstText)) score += 2;
+
+    // Contains images (possible image-based question)
+    const images = element.querySelectorAll('img');
+    const significantImages = Array.from(images).filter(isSignificantImage);
+    if (significantImages.length > 0 && (totalInputs > 0 || divOptions.length >= 2)) score += 2;
+
+    // Contains table with radio buttons (IndiaBix-style layout)
+    const tableWithRadios = element.querySelector('table input[type="radio"]');
+    if (tableWithRadios) score += 3;
 
     const textLen = element.textContent.trim().length;
     if (textLen >= 20 && textLen <= 3000) score += 1;
+    if (textLen >= 50 && textLen <= 2000) score += 1; // sweet spot for single question
     if (textLen > 8000) score -= 5;
     if (textLen < 10) score -= 5;
 
-    if (['body', 'html', 'main', 'header', 'footer', 'nav'].includes(tag)) score -= 10;
+    if (['body', 'html', 'main', 'header', 'footer', 'nav', 'aside'].includes(tag)) score -= 10;
 
+    // Structural penalties for containers that are too broad
     const childQuestions = element.querySelectorAll(
-      '.ques_marg, .question, .que, [class*="question-item"], [class*="quiz-item"]'
+      '.ques_marg, .question, .que, [class*="question-item"], [class*="quiz-item"], ' +
+      '.bix-div-container, .single-question, [data-question-id]'
     );
     if (childQuestions.length > 1) score -= 5;
+
+    // Penalty for containing navigation/sidebar elements
+    if (element.querySelector('nav, [role="navigation"], .sidebar, .pagination')) score -= 3;
 
     return score;
   }
@@ -409,10 +499,17 @@
     let depth = 0;
     while (current && current !== document.body && depth < 15) {
       const inputs = current.querySelectorAll('input, select, textarea');
-      const divOptions = current.querySelectorAll('.opt_text, [role="radio"], [role="option"], .answers-list > li');
+      const divOptions = current.querySelectorAll(
+        '.opt_text, [role="radio"], [role="option"], .answers-list > li, ' +
+        '[class*="answer-option"], [class*="choice-item"], button[class*="option"]'
+      );
       const textLen = current.textContent.trim().length;
       if ((inputs.length > 0 || divOptions.length >= 2) && textLen > 20 && textLen < 5000) {
         return current;
+      }
+      // Check for table-based questions (IndiaBix pattern)
+      if (current.tagName === 'TABLE' || current.querySelector('table input[type="radio"]')) {
+        if (textLen > 20 && textLen < 5000) return current;
       }
       current = current.parentElement;
       depth++;
@@ -623,6 +720,7 @@
   }
 
   function extractQuestionText(container) {
+    // ---- Strategy 1: Known question-text selectors ----
     const questionSelectors = [
       '.question-text', '.question_text', '.questionText',
       '.question-title', '.question_title',
@@ -634,6 +732,12 @@
       '.qtext', '.formulation .qtext',
       '[class*="question-content"]', '[class*="questionContent"]',
       '.question-header', '[class*="questionText"]',
+      // IndiaBix / competitive exam sites
+      '.bix-td-qtxt', '.question-row-text',
+      // Additional LMS
+      '.perseus-renderer .paragraph',
+      '.prob-stem', '.exercise-stem',
+      '[class*="QuestionStem"]', '[class*="questionStem"]',
     ];
 
     for (const sel of questionSelectors) {
@@ -643,17 +747,31 @@
       }
     }
 
-    const answerSection = container.querySelector(
-      '.answers-list, .answer_list, [class*="answer"], [class*="option"], ' +
-      '[class*="choice"], input[type="radio"], input[type="checkbox"]'
+    // ---- Strategy 2: Find text BEFORE the answer section ----
+    // Collect all answer-area markers (inputs, option lists, etc.)
+    const answerMarkers = container.querySelectorAll(
+      '.answers-list, .answer_list, [class*="answer-option"], [class*="choice-item"], ' +
+      'input[type="radio"], input[type="checkbox"], ' +
+      '[role="radio"], [role="checkbox"], .opt_text, ' +
+      '[class*="answerOption"], [class*="choiceItem"]'
     );
 
-    if (answerSection) {
+    if (answerMarkers.length > 0) {
+      // Find the topmost answer marker by DOM order
+      const firstMarker = answerMarkers[0];
+      const firstMarkerParent = firstMarker.closest('ul, ol, table, .answers-list, .answer_list, ' +
+        '[class*="option"], [class*="answer"], [class*="choice"], [role="radiogroup"]')
+        || firstMarker.parentElement;
+
+      // Walk text nodes before the answer area
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
       let parts = [];
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (answerSection.contains(node) || answerSection === node.parentElement) break;
+        // Stop if we've reached the answer section
+        if (firstMarkerParent.contains(node)) break;
+        // Also stop at the first marker itself
+        if (firstMarker.contains(node)) break;
         const text = node.textContent.trim();
         if (text.length > 2) parts.push(text);
       }
@@ -663,6 +781,7 @@
       }
     }
 
+    // ---- Strategy 3: Walk elements before any input ----
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT);
     let questionParts = [];
     let foundInput = false;
@@ -670,19 +789,27 @@
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const tag = node.tagName.toLowerCase();
-      if (['input', 'select', 'textarea'].includes(tag)) { foundInput = true; continue; }
-      if (!foundInput && ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'legend', 'label'].includes(tag)) {
+      if (['input', 'select', 'textarea'].includes(tag) ||
+          node.getAttribute('role') === 'radio' || node.getAttribute('role') === 'checkbox') {
+        foundInput = true; continue;
+      }
+      if (!foundInput && ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'legend', 'label', 'td', 'th', 'strong', 'em', 'b', 'i'].includes(tag)) {
         const directText = getDirectText(node);
         if (directText.length > 3) questionParts.push(directText);
       }
     }
     if (questionParts.length > 0) return questionParts.join(' ').trim();
 
+    // ---- Strategy 4: Clone container, strip answer elements, take remaining text ----
     const clone = container.cloneNode(true);
-    clone.querySelectorAll('label, [class*="answer"], [class*="option"], [class*="choice"]').forEach(el => el.remove());
+    clone.querySelectorAll(
+      'label, [class*="answer"], [class*="option"], [class*="choice"], ' +
+      'input, select, textarea, [role="radio"], [role="checkbox"], .opt_text'
+    ).forEach(el => el.remove());
     const remaining = clone.textContent.trim();
     if (remaining.length > 5) return remaining;
 
+    // ---- Strategy 5: Fallback — truncated container text ----
     return container.textContent.trim().substring(0, 2000);
   }
 
@@ -1425,6 +1552,37 @@
       }
     }
 
+    // 10. Fuzzy match: normalize both strings, remove punctuation/articles, compare
+    const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\b(a|an|the|is|are|was|were)\b/g, '').replace(/\s+/g, ' ').trim();
+    const normalizedAnswer = normalize(cleanAnswer);
+    if (normalizedAnswer.length > 3) {
+      let bestScore = 0;
+      let bestOpt = null;
+      for (const opt of options) {
+        const normalizedOpt = normalize(opt.text);
+        if (normalizedOpt.length === 0) continue;
+        // Check substring containment after normalization
+        if (normalizedOpt === normalizedAnswer) {
+          devLog('Matched via normalized exact:', opt.text.substring(0, 30));
+          return opt;
+        }
+        // Jaccard similarity on words
+        const answerWordSet = new Set(normalizedAnswer.split(' ').filter(w => w.length > 1));
+        const optWordSet = new Set(normalizedOpt.split(' ').filter(w => w.length > 1));
+        const intersection = [...answerWordSet].filter(w => optWordSet.has(w)).length;
+        const union = new Set([...answerWordSet, ...optWordSet]).size;
+        const similarity = union > 0 ? intersection / union : 0;
+        if (similarity > bestScore && similarity >= 0.5) {
+          bestScore = similarity;
+          bestOpt = opt;
+        }
+      }
+      if (bestOpt) {
+        devLog('Matched via fuzzy similarity:', bestScore.toFixed(2), bestOpt.text.substring(0, 30));
+        return bestOpt;
+      }
+    }
+
     return null;
   }
 
@@ -1632,27 +1790,36 @@
       .qs-modal-overlay.qs-visible { opacity: 1; }
       .qs-modal {
         background: #fff;
-        border-radius: 16px;
+        border-radius: 14px;
         box-shadow: 0 25px 60px -12px rgba(0,0,0,0.3);
-        max-width: 560px;
+        max-width: 380px;
         width: 92vw;
-        max-height: 82vh;
+        max-height: 70vh;
         display: flex;
         flex-direction: column;
         overflow: hidden;
         transform: scale(0.95) translateY(10px);
         transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
       }
+      .qs-modal.qs-modal-md { max-width: 480px; max-height: 78vh; }
+      .qs-modal.qs-modal-lg { max-width: 640px; max-height: 85vh; }
       .qs-modal-overlay.qs-visible .qs-modal {
         transform: scale(1) translateY(0);
+      }
+      .qs-modal.qs-dragged {
+        transform: none !important;
+        transition: none !important;
       }
       .qs-modal-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 20px 24px 16px;
+        padding: 14px 18px 12px;
         border-bottom: 1px solid #f0f0f0;
+        cursor: grab;
+        user-select: none;
       }
+      .qs-modal-header.qs-dragging { cursor: grabbing; }
       .qs-modal-title {
         font-size: 16px;
         font-weight: 600;
@@ -1688,28 +1855,30 @@
       }
       .qs-modal-close:hover { background: #f5f5f5; color: #333; }
       .qs-modal-body {
-        padding: 20px 24px;
+        padding: 14px 18px;
         overflow-y: auto;
         flex: 1;
       }
-      .qs-modal-section { margin-bottom: 16px; }
+      .qs-modal-section { margin-bottom: 12px; }
       .qs-modal-section:last-child { margin-bottom: 0; }
       .qs-modal-label {
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: #999;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
       }
       .qs-modal-question {
-        font-size: 14px;
+        font-size: 13px;
         color: #333;
-        line-height: 1.6;
+        line-height: 1.5;
         background: #FAFAFA;
-        padding: 12px 16px;
-        border-radius: 10px;
+        padding: 10px 14px;
+        border-radius: 8px;
         border: 1px solid #f0f0f0;
+        max-height: 100px;
+        overflow-y: auto;
       }
       .qs-modal-answer-box {
         display: flex;
@@ -1751,15 +1920,15 @@
       }
       .qs-modal-footer {
         display: flex;
-        gap: 10px;
-        padding: 16px 24px 20px;
+        gap: 8px;
+        padding: 12px 18px 14px;
         border-top: 1px solid #f0f0f0;
       }
       .qs-modal-btn {
         flex: 1;
-        padding: 10px 16px;
-        border-radius: 10px;
-        font-size: 13px;
+        padding: 8px 14px;
+        border-radius: 8px;
+        font-size: 12px;
         font-weight: 600;
         cursor: pointer;
         transition: all 0.15s ease;
@@ -1828,10 +1997,11 @@
 
     if (explanationModalElement) explanationModalElement.remove();
 
+    const sizeClass = modalSize === 'large' ? 'qs-modal-lg' : modalSize === 'medium' ? 'qs-modal-md' : '';
     const overlay = document.createElement('div');
     overlay.className = 'qs-modal-overlay';
     overlay.innerHTML = `
-      <div class="qs-modal">
+      <div class="qs-modal ${sizeClass}">
         <div class="qs-modal-header">
           <div class="qs-modal-title">
             Explanation
@@ -1881,7 +2051,57 @@
       if (e.target === overlay) hideExplanationModal();
     });
 
+    makeModalDraggable(overlay);
     return overlay;
+  }
+
+  function makeModalDraggable(overlay) {
+    const modal = overlay.querySelector('.qs-modal');
+    const header = overlay.querySelector('.qs-modal-header');
+    if (!modal || !header) return;
+
+    let isDragging = false;
+    let startX, startY, startLeft, startTop;
+
+    header.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.qs-modal-close')) return;
+      isDragging = true;
+      header.classList.add('qs-dragging');
+
+      const rect = modal.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+
+      modal.classList.add('qs-dragged');
+      modal.style.position = 'fixed';
+      modal.style.left = startLeft + 'px';
+      modal.style.top = startTop + 'px';
+      modal.style.margin = '0';
+      overlay.style.alignItems = 'flex-start';
+      overlay.style.justifyContent = 'flex-start';
+
+      e.preventDefault();
+    });
+
+    const onMove = (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      modal.style.left = Math.max(0, Math.min(window.innerWidth - 100, startLeft + dx)) + 'px';
+      modal.style.top = Math.max(0, Math.min(window.innerHeight - 50, startTop + dy)) + 'px';
+    };
+
+    const onUp = () => {
+      if (isDragging) {
+        isDragging = false;
+        header.classList.remove('qs-dragging');
+      }
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
 
   function updateExplanationModal(answer, explanation, domRefs, options) {
@@ -1947,15 +2167,640 @@
     }, 200);
   }
 
+  // ============================================================
+  // SELECTION TOOLBAR (Highlight → Solve / Explain / Rephrase)
+  // ============================================================
+
+  let selToolbar = null;
+  let selTimeout = null;
+
+  function injectSelToolbarStyles() {
+    if (document.getElementById('qs-sel-styles')) return;
+    const s = document.createElement('style');
+    s.id = 'qs-sel-styles';
+    s.textContent = `
+      .qs-sel-toolbar {
+        position: fixed;
+        z-index: 2147483646;
+        display: flex;
+        align-items: center;
+        gap: 1px;
+        padding: 3px;
+        background: #1a1a2e;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 10px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,0,0,0.1);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        opacity: 0;
+        transform: translateY(4px);
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        pointer-events: none;
+      }
+      .qs-sel-toolbar.qs-visible {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      .qs-sel-btn {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 5px 10px;
+        border: none;
+        background: transparent;
+        color: #b0b0c0;
+        font-size: 11px;
+        font-weight: 500;
+        cursor: pointer;
+        border-radius: 7px;
+        transition: all 0.1s ease;
+        white-space: nowrap;
+      }
+      .qs-sel-btn:hover {
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+      }
+      .qs-sel-btn svg { width: 13px; height: 13px; }
+      .qs-sel-div {
+        width: 1px;
+        height: 14px;
+        background: rgba(255,255,255,0.08);
+      }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function showSelToolbar(text, rect) {
+    injectSelToolbarStyles();
+    hideSelToolbar();
+
+    const tb = document.createElement('div');
+    tb.className = 'qs-sel-toolbar';
+
+    const btns = [];
+    if (featureHighlight) {
+      btns.push(`<button class="qs-sel-btn" data-action="solve"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>Solve</button>`);
+      btns.push(`<span class="qs-sel-div"></span>`);
+      btns.push(`<button class="qs-sel-btn" data-action="explain"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Explain</button>`);
+    }
+    if (featureRephrase) {
+      if (btns.length > 0) btns.push(`<span class="qs-sel-div"></span>`);
+      btns.push(`<button class="qs-sel-btn" data-action="rephrase"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>Rephrase</button>`);
+    }
+    if (btns.length === 0) return;
+
+    tb.innerHTML = btns.join('');
+
+    // Position above selection
+    let top = rect.top - 42 + window.scrollY;
+    let left = rect.left + rect.width / 2;
+    if (top < 10) top = rect.bottom + 8 + window.scrollY;
+
+    tb.style.top = (top - window.scrollY) + 'px';
+    tb.style.left = left + 'px';
+    tb.style.transform = 'translateX(-50%) translateY(4px)';
+
+    // Clamp to viewport
+    document.body.appendChild(tb);
+    const tbRect = tb.getBoundingClientRect();
+    if (tbRect.right > window.innerWidth - 8) {
+      tb.style.left = (window.innerWidth - tbRect.width - 8) + 'px';
+      tb.style.transform = 'translateY(4px)';
+    }
+    if (tbRect.left < 8) {
+      tb.style.left = '8px';
+      tb.style.transform = 'translateY(4px)';
+    }
+
+    selToolbar = tb;
+    requestAnimationFrame(() => {
+      tb.classList.add('qs-visible');
+      tb.style.transform = tb.style.transform.replace('translateY(4px)', 'translateY(0)');
+    });
+
+    // Button handlers
+    tb.addEventListener('click', async (evt) => {
+      const action = evt.target.closest('[data-action]')?.dataset.action;
+      if (!action) return;
+      hideSelToolbar();
+      await handleSelAction(action, text);
+    });
+  }
+
+  function hideSelToolbar() {
+    if (selToolbar) {
+      selToolbar.remove();
+      selToolbar = null;
+    }
+  }
+
+  async function handleSelAction(action, text) {
+    if (processing) return;
+    processing = true;
+    devLog('Selection action:', action, 'text:', text.substring(0, 60));
+
+    try {
+      if (action === 'rephrase') {
+        const modal = showRephraseModal(text);
+        try {
+          const result = await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage(
+              { type: 'PROCESS_REPHRASE', data: { text } },
+              (resp) => {
+                if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                if (resp.success) resolve(resp.result);
+                else reject(new Error(resp.error));
+              }
+            );
+          });
+          updateRephraseModal(result);
+        } catch (err) {
+          showRephraseError(err.message);
+        }
+      } else {
+        // Solve or Explain — try to find question context near the selection
+        const sel = window.getSelection();
+        const anchor = sel?.anchorNode?.parentElement || document.body;
+        const context = await extractQuestionContext(anchor);
+
+        if (!context) {
+          // Fallback: treat selected text as the question directly
+          const fallbackContext = {
+            questionText: text,
+            type: 'SHORT_ANSWER',
+            baseType: 'SHORT_ANSWER',
+            instructions: '',
+            options: [],
+            images: [],
+          };
+
+          if (action === 'explain') {
+            const modal = showExplanationModal(text);
+            if (!modal) { processing = false; return; }
+            try {
+              const resp = await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage(
+                  { type: 'PROCESS_EXPLANATION', data: fallbackContext },
+                  (r) => {
+                    if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                    if (r.success) resolve(r);
+                    else reject(new Error(r.error));
+                  }
+                );
+              });
+              updateExplanationModal(resp.answer, resp.explanation, null, []);
+            } catch (err) { showExplanationError(err.message); }
+          } else {
+            // Solve with no options - just get answer and copy
+            const resp = await new Promise((resolve, reject) => {
+              chrome.runtime.sendMessage(
+                { type: 'PROCESS_QUESTION', data: fallbackContext },
+                (r) => {
+                  if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  if (r.success) resolve(r.answer);
+                  else reject(new Error(r.error));
+                }
+              );
+            });
+            navigator.clipboard.writeText(resp).catch(() => {});
+            devLog('Answer from selection (solve):', resp);
+          }
+        } else {
+          const domRefs = context._domRefs;
+          delete context._domRefs;
+
+          if (action === 'explain') {
+            const modal = showExplanationModal(context.questionText);
+            if (!modal) { processing = false; return; }
+            try {
+              const resp = await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage(
+                  { type: 'PROCESS_EXPLANATION', data: context },
+                  (r) => {
+                    if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                    if (r.success) resolve(r);
+                    else reject(new Error(r.error));
+                  }
+                );
+              });
+              updateExplanationModal(resp.answer, resp.explanation, domRefs, context.options);
+            } catch (err) { showExplanationError(err.message); }
+          } else {
+            const resp = await new Promise((resolve, reject) => {
+              chrome.runtime.sendMessage(
+                { type: 'PROCESS_QUESTION', data: context },
+                (r) => {
+                  if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  if (r.success) resolve(r.answer);
+                  else reject(new Error(r.error));
+                }
+              );
+            });
+            applyAnswer(domRefs, resp);
+          }
+        }
+      }
+    } catch (err) {
+      devError('Selection action error:', err.message);
+    } finally {
+      processing = false;
+    }
+  }
+
+  // Rephrase modal (reuses base modal styles)
+  function showRephraseModal(originalText) {
+    injectExplanationStyles();
+    if (explanationModalElement) explanationModalElement.remove();
+
+    const sizeClass = modalSize === 'large' ? 'qs-modal-lg' : modalSize === 'medium' ? 'qs-modal-md' : '';
+    const overlay = document.createElement('div');
+    overlay.className = 'qs-modal-overlay';
+    overlay.innerHTML = `
+      <div class="qs-modal ${sizeClass}">
+        <div class="qs-modal-header">
+          <div class="qs-modal-title">Rephrase <span class="qs-modal-badge">AI</span></div>
+          <button class="qs-modal-close" data-qs-close>&times;</button>
+        </div>
+        <div class="qs-modal-body">
+          <div class="qs-modal-section">
+            <div class="qs-modal-label">Original</div>
+            <div class="qs-modal-question">${escapeHTML(originalText.substring(0, 500))}</div>
+          </div>
+          <div class="qs-modal-section">
+            <div class="qs-modal-label">Rephrased</div>
+            <div class="qs-loading-container" id="qs-loading">
+              <div class="qs-loading-dots"><span></span><span></span><span></span></div>
+              <div class="qs-loading-text">Rephrasing...</div>
+            </div>
+            <div class="qs-modal-explanation" id="qs-rephrase-result" style="display:none"></div>
+            <div class="qs-modal-error" id="qs-rephrase-error" style="display:none"></div>
+          </div>
+        </div>
+        <div class="qs-modal-footer">
+          <button class="qs-modal-btn qs-modal-btn-secondary" data-qs-close>Close</button>
+          <button class="qs-modal-btn qs-modal-btn-primary" id="qs-copy-btn" style="display:none">Copy</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    explanationModalElement = overlay;
+    requestAnimationFrame(() => overlay.classList.add('qs-visible'));
+    overlay.querySelectorAll('[data-qs-close]').forEach(b => b.addEventListener('click', hideExplanationModal));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) hideExplanationModal(); });
+    makeModalDraggable(overlay);
+    return overlay;
+  }
+
+  function updateRephraseModal(result) {
+    if (!explanationModalElement) return;
+    const loading = explanationModalElement.querySelector('#qs-loading');
+    const resultEl = explanationModalElement.querySelector('#qs-rephrase-result');
+    const copyBtn = explanationModalElement.querySelector('#qs-copy-btn');
+    if (loading) loading.style.display = 'none';
+    if (resultEl) { resultEl.textContent = result; resultEl.style.display = ''; }
+    if (copyBtn) {
+      copyBtn.style.display = '';
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(result).catch(() => {});
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+      });
+    }
+  }
+
+  function showRephraseError(msg) {
+    if (!explanationModalElement) return;
+    const loading = explanationModalElement.querySelector('#qs-loading');
+    const errEl = explanationModalElement.querySelector('#qs-rephrase-error');
+    if (loading) loading.style.display = 'none';
+    if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+  }
+
+  // Selection listeners
+  document.addEventListener('mouseup', (e) => {
+    if (!isActive) return;
+    if (!featureHighlight && !featureRephrase) return;
+    if (e.target.closest('.qs-modal-overlay, .qs-sel-toolbar, .qs-draw-overlay')) return;
+
+    clearTimeout(selTimeout);
+    selTimeout = setTimeout(() => {
+      const sel = window.getSelection();
+      const text = sel?.toString()?.trim();
+      if (!text || text.length < 3) { hideSelToolbar(); return; }
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      if (rect.width > 0) showSelToolbar(text, rect);
+    }, 300);
+  });
+
+  document.addEventListener('mousedown', (e) => {
+    if (!e.target.closest('.qs-sel-toolbar')) hideSelToolbar();
+  });
+
+  // ============================================================
+  // DRAW REGION (Rectangle capture → Solve)
+  // ============================================================
+
+  let drawOverlay = null;
+
+  function injectDrawStyles() {
+    if (document.getElementById('qs-draw-styles')) return;
+    const s = document.createElement('style');
+    s.id = 'qs-draw-styles';
+    s.textContent = `
+      .qs-draw-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        z-index: 2147483646;
+        cursor: crosshair;
+        background: rgba(0,0,0,0.12);
+        transition: background 0.15s ease;
+      }
+      .qs-draw-rect {
+        position: fixed;
+        border: 2px solid #4F46E5;
+        background: rgba(79, 70, 229, 0.06);
+        border-radius: 3px;
+        pointer-events: none;
+        z-index: 2147483647;
+      }
+      .qs-draw-hint {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 8px 16px;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        font-size: 12px;
+        border-radius: 8px;
+        z-index: 2147483647;
+        font-family: -apple-system, sans-serif;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        pointer-events: none;
+      }
+      .qs-draw-hint kbd {
+        display: inline-block;
+        padding: 1px 5px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 3px;
+        font-size: 11px;
+        font-family: monospace;
+        margin: 0 2px;
+      }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function startDrawRegion() {
+    if (!featureDrawRegion || drawOverlay) return;
+    injectDrawStyles();
+    devLog('Draw region started');
+
+    const overlay = document.createElement('div');
+    overlay.className = 'qs-draw-overlay';
+
+    const hint = document.createElement('div');
+    hint.className = 'qs-draw-hint';
+    hint.innerHTML = 'Click and drag to select a region. Press <kbd>Esc</kbd> to cancel.';
+
+    const rectEl = document.createElement('div');
+    rectEl.className = 'qs-draw-rect';
+    rectEl.style.display = 'none';
+
+    document.body.appendChild(overlay);
+    document.body.appendChild(hint);
+    document.body.appendChild(rectEl);
+    drawOverlay = overlay;
+
+    let startX = 0, startY = 0, drawing = false;
+
+    const onDown = (e) => {
+      startX = e.clientX;
+      startY = e.clientY;
+      drawing = true;
+      rectEl.style.display = 'block';
+      rectEl.style.left = startX + 'px';
+      rectEl.style.top = startY + 'px';
+      rectEl.style.width = '0';
+      rectEl.style.height = '0';
+    };
+
+    const onMove = (e) => {
+      if (!drawing) return;
+      const x = Math.min(startX, e.clientX);
+      const y = Math.min(startY, e.clientY);
+      const w = Math.abs(e.clientX - startX);
+      const h = Math.abs(e.clientY - startY);
+      rectEl.style.left = x + 'px';
+      rectEl.style.top = y + 'px';
+      rectEl.style.width = w + 'px';
+      rectEl.style.height = h + 'px';
+    };
+
+    const cleanup = () => {
+      overlay.remove();
+      hint.remove();
+      rectEl.remove();
+      drawOverlay = null;
+      document.removeEventListener('keydown', onKey);
+    };
+
+    const onUp = async (e) => {
+      if (!drawing) return;
+      drawing = false;
+      const x = Math.min(startX, e.clientX);
+      const y = Math.min(startY, e.clientY);
+      const w = Math.abs(e.clientX - startX);
+      const h = Math.abs(e.clientY - startY);
+      cleanup();
+
+      if (w < 20 || h < 20) return; // Too small
+      await captureAndProcess({ x, y, width: w, height: h });
+    };
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') cleanup();
+    };
+
+    overlay.addEventListener('mousedown', onDown);
+    document.addEventListener('mousemove', onMove);
+    overlay.addEventListener('mouseup', onUp);
+    document.addEventListener('keydown', onKey);
+  }
+
+  // ============================================================
+  // SNAP IT (Screen capture → Solve)
+  // ============================================================
+
+  async function snapIt() {
+    if (!featureSnapIt) return;
+    devLog('Snap it triggered');
+    await captureAndProcess(null); // null = full viewport
+  }
+
+  async function captureAndProcess(region) {
+    if (processing) return;
+    processing = true;
+
+    // Show loading modal immediately
+    const modal = showExplanationModal(region
+      ? 'Analyzing selected region...'
+      : 'Analyzing screen capture...');
+    if (!modal) { processing = false; return; }
+
+    try {
+      // Request screenshot from background
+      const screenshot = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ type: 'CAPTURE_TAB' }, (resp) => {
+          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+          if (resp?.success) resolve(resp.dataUrl);
+          else reject(new Error(resp?.error || 'Capture failed'));
+        });
+      });
+
+      // Crop if region specified
+      let imageData;
+      if (region) {
+        const dpr = window.devicePixelRatio || 1;
+        imageData = await cropImage(screenshot, {
+          x: region.x * dpr,
+          y: region.y * dpr,
+          width: region.width * dpr,
+          height: region.height * dpr,
+        });
+      } else {
+        // Use full screenshot
+        const base64 = screenshot.split(',')[1];
+        const mimeType = screenshot.split(';')[0].split(':')[1];
+        imageData = { data: base64, mimeType };
+      }
+
+      // Send to AI for explanation
+      const context = {
+        questionText: '[The question is in the attached image. Analyze the image to determine the question, identify the options if any, and provide the correct answer.]',
+        type: 'MULTIPLE_CHOICE',
+        baseType: 'MULTIPLE_CHOICE',
+        instructions: '',
+        options: [],
+        images: [imageData],
+      };
+
+      const resp = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          { type: 'PROCESS_EXPLANATION', data: context },
+          (r) => {
+            if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+            if (r.success) resolve(r);
+            else reject(new Error(r.error));
+          }
+        );
+      });
+
+      updateExplanationModal(resp.answer, resp.explanation, null, []);
+    } catch (err) {
+      devError('Capture error:', err.message);
+      showExplanationError('Capture failed: ' + err.message);
+    } finally {
+      processing = false;
+    }
+  }
+
+  function cropImage(dataUrl, region) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(region.width, img.width - region.x);
+        canvas.height = Math.min(region.height, img.height - region.y);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, region.x, region.y, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+        const cropped = canvas.toDataURL('image/png');
+        resolve({
+          data: cropped.split(',')[1],
+          mimeType: 'image/png'
+        });
+      };
+      img.onerror = () => reject(new Error('Failed to load screenshot'));
+      img.src = dataUrl;
+    });
+  }
+
+  // ============================================================
+  // KEYBOARD SHORTCUTS (Draw/Snap + Escape)
+  // ============================================================
+
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && explanationModalElement) {
-      hideExplanationModal();
+    if (e.key === 'Escape') {
+      if (explanationModalElement) hideExplanationModal();
+      if (drawOverlay) { drawOverlay.remove(); drawOverlay = null; }
+      return;
+    }
+
+    if (!isActive) return;
+
+    // Ctrl+Shift+D → Draw region
+    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+      e.preventDefault();
+      startDrawRegion();
+      return;
+    }
+
+    // Ctrl+Shift+S → Snap it
+    if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+      e.preventDefault();
+      snapIt();
+      return;
     }
   });
 
   // ============================================================
   // DOUBLE-CLICK HANDLER
   // ============================================================
+
+  /**
+   * Smart target resolution: find the best element to use as question anchor.
+   * Tries: (1) direct click target, (2) the selected text's parent, (3) element at click position,
+   * (4) nearest question container by proximity.
+   */
+  function resolveClickTarget(e) {
+    const target = e.target;
+
+    // 1. If the click target is inside a known question selector, use it directly
+    for (const selector of QUESTION_ITEM_SELECTORS) {
+      try {
+        const match = target.closest(selector);
+        if (match && isVisible(match)) return target;
+      } catch (_) {}
+    }
+
+    // 2. Check if there's a text selection — use the selection's anchor node
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && sel.toString().trim().length > 0) {
+      const anchorEl = sel.anchorNode?.nodeType === Node.TEXT_NODE
+        ? sel.anchorNode.parentElement : sel.anchorNode;
+      if (anchorEl && anchorEl !== document.body) {
+        devLog('Using selection anchor as target:', anchorEl.tagName);
+        return anchorEl;
+      }
+    }
+
+    // 3. Try elementFromPoint for precision
+    const pointEl = document.elementFromPoint(e.clientX, e.clientY);
+    if (pointEl && pointEl !== target && pointEl !== document.body) {
+      // Check if pointEl is in a question container
+      for (const selector of QUESTION_ITEM_SELECTORS) {
+        try {
+          if (pointEl.closest(selector)) {
+            devLog('Using elementFromPoint as target:', pointEl.tagName);
+            return pointEl;
+          }
+        } catch (_) {}
+      }
+    }
+
+    return target;
+  }
 
   document.addEventListener('dblclick', async (e) => {
     if (!isActive || processing) return;
@@ -1972,7 +2817,14 @@
     const startTime = Date.now();
 
     try {
-      const context = await extractQuestionContext(e.target);
+      // Smart target resolution
+      const resolvedTarget = resolveClickTarget(e);
+      if (resolvedTarget !== e.target) {
+        devLog('Resolved target:', resolvedTarget.tagName,
+               'class:', resolvedTarget.className?.toString()?.substring(0, 40));
+      }
+
+      const context = await extractQuestionContext(resolvedTarget);
       if (!context) {
         devWarn('No question context found — took', Date.now() - startTime, 'ms');
         processing = false;
