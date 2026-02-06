@@ -1,5 +1,5 @@
 // ============================================================
-// Answer Mate - Popup Script
+// QuizSolve - Popup Script
 // Settings UI, model selection, API mode, usage stats
 // ============================================================
 
@@ -24,7 +24,7 @@ const MODEL_DESCRIPTIONS = {
 let providers = {};
 let currentProvider = 'openai';
 let currentModel = '';
-let currentApiMode = 'cheatly';
+let currentApiMode = 'quizsolve';
 let activeTabId = null;
 
 const $ = (sel) => document.querySelector(sel);
@@ -48,7 +48,7 @@ const smartSwitch = $('#smartSwitch');
 const visionModelSection = $('#visionModelSection');
 const visionModelSelect = $('#visionModelSelect');
 const byokModelsSection = $('#byokModelsSection');
-const cheatlyModelsSection = $('#cheatlyModelsSection');
+const quizsolveModelsSection = $('#quizsolveModelsSection');
 const rateLimitsSection = $('#rateLimitsSection');
 
 // ---- Initialization ----
@@ -72,7 +72,7 @@ async function init() {
   ]);
 
   // API Mode
-  currentApiMode = settings.apiMode || 'cheatly';
+  currentApiMode = settings.apiMode || 'quizsolve';
   const apiModeRadio = document.querySelector(`input[name="apiMode"][value="${currentApiMode}"]`);
   if (apiModeRadio) apiModeRadio.checked = true;
   updateApiModeUI(currentApiMode);
@@ -232,9 +232,9 @@ function updateApiModeUI(mode) {
 
   // Models tab: toggle sections
   byokModelsSection.style.display = isOwnKey ? 'block' : 'none';
-  cheatlyModelsSection.style.display = isOwnKey ? 'none' : 'block';
+  quizsolveModelsSection.style.display = isOwnKey ? 'none' : 'block';
 
-  // Usage tab: show rate limits only in cheatly mode
+  // Usage tab: show rate limits only in quizsolve mode
   rateLimitsSection.style.display = isOwnKey ? 'none' : 'flex';
 }
 

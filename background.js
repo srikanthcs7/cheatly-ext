@@ -1,27 +1,27 @@
 // ============================================================
-// Answer Mate - Background Service Worker
+// QuizSolve - Background Service Worker
 // Handles AI API calls, state management, and message routing
-// Dual mode: Cheatly Backend API + Bring Your Own Key (BYOK)
+// Dual mode: QuizSolve Backend API + Bring Your Own Key (BYOK)
 // ============================================================
 
 // ---- Dev Mode Detection ----
 const IS_DEV = !('update_url' in chrome.runtime.getManifest());
 
 function devLog(...args) {
-  if (IS_DEV) console.log('[AnswerMate]', ...args);
+  if (IS_DEV) console.log('[QuizSolve]', ...args);
 }
 function devWarn(...args) {
-  if (IS_DEV) console.warn('[AnswerMate]', ...args);
+  if (IS_DEV) console.warn('[QuizSolve]', ...args);
 }
 function devError(...args) {
-  if (IS_DEV) console.error('[AnswerMate]', ...args);
+  if (IS_DEV) console.error('[QuizSolve]', ...args);
 }
 
 // ============================================================
 // CONFIGURATION
 // ============================================================
 
-const CHEATLY_API_URL = 'https://cheatly.vercel.app/api/get-answer';
+const QUIZSOLVE_API_URL = 'https://quizsolve.vercel.app/api/get-answer';
 
 // ============================================================
 // SESSION ID MANAGEMENT
@@ -33,7 +33,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     await chrome.storage.local.set({
       sessionId,
       installDate: Date.now(),
-      apiMode: 'cheatly',
+      apiMode: 'quizsolve',
       stats: { totalRequests: 0, requestsToday: 0, lastRequestDate: null },
       rateLimits: {
         remaining: { minute: 10, hour: 200, day: 1000 },
@@ -50,7 +50,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       await chrome.storage.local.set({ sessionId: crypto.randomUUID() });
     }
     if (!data.apiMode) {
-      await chrome.storage.local.set({ apiMode: 'cheatly' });
+      await chrome.storage.local.set({ apiMode: 'quizsolve' });
     }
     if (!data.stats) {
       await chrome.storage.local.set({
@@ -428,7 +428,7 @@ async function processQuestion(questionData) {
     'apiMode', 'provider', 'apiKey_openai', 'apiKey_gemini', 'apiKey_anthropic'
   ]);
 
-  const apiMode = settings.apiMode || 'cheatly';
+  const apiMode = settings.apiMode || 'quizsolve';
 
   if (apiMode === 'own_key') {
     return await processQuestionDirect(questionData, settings);
@@ -476,7 +476,7 @@ async function processQuestionDirect(questionData, settings) {
   return answer;
 }
 
-// ---- Backend API call (Cheatly API mode) ----
+// ---- Backend API call (QuizSolve API mode) ----
 async function processQuestionViaBackend(questionData) {
   const sessionId = await getSessionId();
   const prompt = buildPrompt(questionData);
@@ -500,7 +500,7 @@ async function processQuestionViaBackend(questionData) {
 
   const startTime = Date.now();
 
-  const response = await fetchWithRetry(CHEATLY_API_URL, {
+  const response = await fetchWithRetry(QUIZSOLVE_API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -586,7 +586,7 @@ async function handleBackendError(response) {
   const messages = {
     400: 'Invalid request format. Please try again.',
     401: 'Session invalid. Please reinstall the extension.',
-    403: 'Access denied. Your session may be blocked. Contact support@cheatly.com',
+    403: 'Access denied. Your session may be blocked. Contact support@quizsolve.com',
     429: `Rate limit exceeded. Try again in ${errorData.retryAfter || 60} seconds.`,
     502: 'AI service temporarily unavailable. Please try again.',
     504: 'Request timed out. Please try again.',

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Answer Mate",
+  "name": "QuizSolve",
   "version": "1.0.0",
   "description": "Your intelligent study companion for online learning",
   "permissions": [
@@ -41,7 +41,7 @@
         "default": "Ctrl+Shift+U",
         "mac": "Command+Shift+U"
       },
-      "description": "Toggle Answer Mate on/off"
+      "description": "Toggle QuizSolve on/off"
     }
   }
 }

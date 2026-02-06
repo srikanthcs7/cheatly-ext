@@ -1,23 +1,23 @@
 // ============================================================
-// Answer Mate - Content Script
+// QuizSolve - Content Script
 // Detects questions, extracts context + images, applies answers
 // Robust auto-answer engine with multi-strategy click simulation
 // ============================================================
 
 (function () {
-  if (window.__answerMateLoaded) return;
-  window.__answerMateLoaded = true;
+  if (window.__quizSolveLoaded) return;
+  window.__quizSolveLoaded = true;
 
   // ---- Dev Mode Detection ----
   const IS_DEV = !('update_url' in chrome.runtime.getManifest());
   function devLog(...args) {
-    if (IS_DEV) console.log('[AnswerMate:Content]', ...args);
+    if (IS_DEV) console.log('[QuizSolve:Content]', ...args);
   }
   function devWarn(...args) {
-    if (IS_DEV) console.warn('[AnswerMate:Content]', ...args);
+    if (IS_DEV) console.warn('[QuizSolve:Content]', ...args);
   }
   function devError(...args) {
-    if (IS_DEV) console.error('[AnswerMate:Content]', ...args);
+    if (IS_DEV) console.error('[QuizSolve:Content]', ...args);
   }
 
   let isActive = false;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate simple PNG icons for Answer Mate extension."""
+"""Generate simple PNG icons for QuizSolve extension."""
 import struct
 import zlib
 import os

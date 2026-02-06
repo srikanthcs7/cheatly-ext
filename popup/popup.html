@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Answer Mate</title>
+  <title>QuizSolve</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -11,9 +11,9 @@
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <div class="logo">AM</div>
+        <div class="logo">QS</div>
         <div>
-          <h1 class="title">Answer Mate</h1>
+          <h1 class="title">QuizSolve</h1>
           <p class="subtitle" id="version">v1.0.0</p>
         </div>
       </div>
@@ -47,9 +47,9 @@
         <label class="section-label">API Mode</label>
         <div class="radio-group">
           <label class="radio-option compact">
-            <input type="radio" name="apiMode" value="cheatly" checked>
+            <input type="radio" name="apiMode" value="quizsolve" checked>
             <span class="radio-label">
-              <strong>Cheatly API</strong>
+              <strong>QuizSolve API</strong>
               <small>Free — no key needed</small>
             </span>
           </label>
@@ -171,11 +171,11 @@
         </div>
       </div>
 
-      <!-- Cheatly API info (shown when cheatly mode) -->
-      <div id="cheatlyModelsSection" style="display:none">
+      <!-- QuizSolve API info (shown when quizsolve mode) -->
+      <div id="quizsolveModelsSection" style="display:none">
         <div class="section">
           <div class="info-card">
-            <p class="info-title">Cheatly API</p>
+            <p class="info-title">QuizSolve API</p>
             <p class="info-desc">Models are automatically selected by our backend for optimal speed and accuracy. No configuration needed.</p>
           </div>
         </div>
@@ -252,7 +252,7 @@
       <div class="help-section">
         <h3>How to Use</h3>
         <ol class="help-list">
-          <li>Choose API mode in Settings (Cheatly API or own key)</li>
+          <li>Choose API mode in Settings (QuizSolve API or own key)</li>
           <li>If using own key, enter it and select model</li>
           <li>Press <kbd>Ctrl+Shift+U</kbd> to activate on any page</li>
           <li>Double-click on any question to get the answer</li>
@@ -294,7 +294,7 @@
       </div>
 
       <div class="help-section footer-link">
-        <a href="https://cheatly.vercel.app/" target="_blank" class="link">Visit cheatly.vercel.app →</a>
+        <a href="https://quizsolve.vercel.app/" target="_blank" class="link">Visit quizsolve.vercel.app →</a>
       </div>
     </div>
   </div>
