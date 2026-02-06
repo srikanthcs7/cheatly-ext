@@ -372,29 +372,39 @@ chrome.commands.onCommand.addListener(async (command) => {
       tabId: tab.id
     });
 
+    // Try sending message to existing content script first
     try {
       await chrome.tabs.sendMessage(tab.id, {
         type: 'TOGGLE_STATE',
         active: state.active
       });
     } catch (e) {
+      // Content script not loaded — inject it, but only if activating
       if (state.active) {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content.js']
-        });
-        await chrome.scripting.insertCSS({
-          target: { tabId: tab.id },
-          files: ['content.css']
-        });
-        setTimeout(async () => {
-          try {
-            await chrome.tabs.sendMessage(tab.id, {
-              type: 'TOGGLE_STATE',
-              active: true
-            });
-          } catch (_) {}
-        }, 200);
+        devLog('Content script not found, injecting...');
+        try {
+          await chrome.scripting.insertCSS({
+            target: { tabId: tab.id },
+            files: ['content.css']
+          });
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['content.js']
+          });
+          // Wait for script to initialize, then send state
+          setTimeout(async () => {
+            try {
+              await chrome.tabs.sendMessage(tab.id, {
+                type: 'TOGGLE_STATE',
+                active: true
+              });
+            } catch (_) {
+              devWarn('Failed to reach content script after injection');
+            }
+          }, 300);
+        } catch (injErr) {
+          devError('Script injection failed:', injErr.message);
+        }
       }
     }
   }
