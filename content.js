@@ -467,6 +467,161 @@
     return null;
   }
 
+  // ============================================================
+  // UNIVERSAL OPTION TEXT EXTRACTION
+  // Adaptive approach that works across any page layout.
+  // Caches the strategy that worked for this page so subsequent
+  // questions use the fastest path.
+  // ============================================================
+
+  let _optionTextStrategy = null;
+
+  function extractTextFromElement(el) {
+    if (!el) return '';
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('input, select, textarea, button, script, style').forEach(n => n.remove());
+    return clone.textContent.replace(/\s+/g, ' ').trim();
+  }
+
+  function stripOptionIdentifier(text) {
+    if (!text) return '';
+    return text.replace(/^\s*[\(\[]?\s*[A-Da-d1-9]\s*[\)\]\.:\-]?\s*/, '').trim();
+  }
+
+  function findOptionText(input) {
+    // If we already know what works for this page, try it first
+    if (_optionTextStrategy) {
+      const result = _tryOptionStrategy(input, _optionTextStrategy);
+      if (result) return result;
+    }
+
+    const strategies = [
+      'label-for', 'label-wrap', 'table-row', 'sibling-walk',
+      'parent-climb', 'aria', 'adjacent-text'
+    ];
+
+    for (const strategy of strategies) {
+      const result = _tryOptionStrategy(input, strategy);
+      if (result) {
+        _optionTextStrategy = strategy;
+        devLog('Option text strategy cached:', strategy, '→', result.substring(0, 40));
+        return result;
+      }
+    }
+
+    return null;
+  }
+
+  function _tryOptionStrategy(input, strategy) {
+    switch (strategy) {
+      case 'label-for': {
+        if (!input.id) return null;
+        const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+        if (!label) return null;
+        const text = extractTextFromElement(label);
+        return stripOptionIdentifier(text) || null;
+      }
+
+      case 'label-wrap': {
+        const label = input.closest('label');
+        if (!label) return null;
+        const text = extractTextFromElement(label);
+        return stripOptionIdentifier(text) || null;
+      }
+
+      case 'table-row': {
+        const td = input.closest('td, th');
+        if (!td) return null;
+        const tr = td.closest('tr');
+        if (!tr) return null;
+        const cells = tr.querySelectorAll('td, th');
+        const textParts = [];
+        for (const cell of cells) {
+          if (cell.contains(input)) continue;
+          const cellText = cell.textContent.trim();
+          // Skip cells that are just single-letter identifiers (A, B, 1, etc.)
+          if (cellText && !(/^[A-Da-d1-9]\s*[\.\)\]:\-]?$/.test(cellText))) {
+            textParts.push(cellText);
+          }
+        }
+        if (textParts.length > 0) {
+          return textParts.join(' ').replace(/\s+/g, ' ').trim() || null;
+        }
+        return null;
+      }
+
+      case 'sibling-walk': {
+        const parent = input.parentElement;
+        if (!parent || parent.matches('td, th')) return null;
+        const textParts = [];
+        for (const sib of parent.children) {
+          if (sib === input || sib.contains(input) || sib.querySelector('input, select, textarea')) continue;
+          const text = sib.textContent.trim();
+          if (text && !(/^[A-Da-d1-9]\s*[\.\)\]:\-]?$/.test(text))) {
+            textParts.push(text);
+          }
+        }
+        if (textParts.length > 0) {
+          return textParts.join(' ').replace(/\s+/g, ' ').trim() || null;
+        }
+        return null;
+      }
+
+      case 'parent-climb': {
+        let current = input.parentElement;
+        let depth = 0;
+        while (current && depth < 6 && current !== document.body) {
+          const sameTypeInputs = current.querySelectorAll(`input[type="${input.type}"]`);
+          const sameNameInputs = input.name
+            ? current.querySelectorAll(`input[name="${CSS.escape(input.name)}"]`)
+            : sameTypeInputs;
+
+          if (sameNameInputs.length <= 1 || sameTypeInputs.length <= 1) {
+            const text = extractTextFromElement(current);
+            const stripped = stripOptionIdentifier(text);
+            if (stripped && stripped.length > 0 && stripped.length < 500) {
+              return stripped;
+            }
+          }
+          current = current.parentElement;
+          depth++;
+        }
+        return null;
+      }
+
+      case 'aria': {
+        if (input.getAttribute('aria-label')) {
+          return stripOptionIdentifier(input.getAttribute('aria-label')) || null;
+        }
+        const labelledBy = input.getAttribute('aria-labelledby');
+        if (labelledBy) {
+          const el = document.getElementById(labelledBy);
+          if (el) return stripOptionIdentifier(el.textContent.trim()) || null;
+        }
+        return null;
+      }
+
+      case 'adjacent-text': {
+        let sibling = input.nextSibling;
+        while (sibling) {
+          if (sibling.nodeType === Node.TEXT_NODE) {
+            const text = sibling.textContent.trim();
+            if (text.length > 0) return stripOptionIdentifier(text) || null;
+          }
+          if (sibling.nodeType === Node.ELEMENT_NODE && !sibling.querySelector('input')) {
+            const text = sibling.textContent.trim();
+            if (text && text.length < 500) return stripOptionIdentifier(text) || null;
+          }
+          sibling = sibling.nextSibling;
+        }
+        return null;
+      }
+
+      default:
+        return null;
+    }
+  }
+
   function extractQuestionText(container) {
     const questionSelectors = [
       '.question-text', '.question_text', '.questionText',
@@ -694,8 +849,10 @@
       });
       const largestGroup = Object.values(nameGroups).sort((a, b) => b.length - a.length)[0];
       largestGroup.forEach((radio, index) => {
-        const label = findLabelForInput(radio);
-        const optionContainer = radio.closest('label, li, div.answer, [class*="option"], [class*="answer"], [class*="choice"]') || radio.parentElement;
+        const label = findOptionText(radio) || findLabelForInput(radio);
+        const optionContainer = radio.closest('label, li, div.answer, [class*="option"], [class*="answer"], [class*="choice"]')
+          || radio.closest('tr')
+          || radio.parentElement;
         options.push({
           element: optionContainer,
           inputElement: radio,
@@ -704,7 +861,8 @@
           identifier: String.fromCharCode(65 + index)
         });
       });
-      devLog('Options found via radio buttons:', options.length);
+      devLog('Options found via radio buttons:', options.length,
+             'texts:', options.map(o => o.text.substring(0, 20)));
       return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
     }
 
@@ -713,8 +871,10 @@
     if (checkboxes.length >= 2) {
       const options = [];
       checkboxes.forEach((cb, index) => {
-        const label = findLabelForInput(cb);
-        const optionContainer = cb.closest('label, li, div, [class*="option"], [class*="answer"], [class*="choice"]') || cb.parentElement;
+        const label = findOptionText(cb) || findLabelForInput(cb);
+        const optionContainer = cb.closest('label, li, div.answer, [class*="option"], [class*="answer"], [class*="choice"]')
+          || cb.closest('tr')
+          || cb.parentElement;
         options.push({
           element: optionContainer,
           inputElement: cb,
@@ -894,14 +1054,23 @@
     devLog('Question container:', container.tagName, container.className?.toString()?.substring(0, 60),
            'textLen:', container.textContent.trim().length);
 
-    const questionText = extractQuestionText(container);
-    if (!questionText || questionText.length < 3) {
-      devWarn('Question text too short or empty');
+    let questionText = extractQuestionText(container);
+    const optionData = extractOptionsAndType(container);
+    const images = await extractImages(container);
+
+    // Support image-based questions: if text is too short but images exist,
+    // the question content is in the image(s)
+    if ((!questionText || questionText.length < 3) && images.length === 0) {
+      devWarn('Question text too short and no images found');
       return null;
     }
 
-    const optionData = extractOptionsAndType(container);
-    const images = await extractImages(container);
+    if ((!questionText || questionText.length < 10) && images.length > 0) {
+      questionText = (questionText || '').trim();
+      questionText += (questionText ? ' ' : '') +
+        '[The question is in the attached image(s). Analyze the image(s) to determine the question and select the correct answer.]';
+      devLog('Image-based question detected, augmented text');
+    }
 
     // Detect question subtype for accuracy enhancement
     const { refinedType, instructions } = detectQuestionSubtype(questionText, optionData.type);
@@ -1159,39 +1328,100 @@
       .trim();
     const strippedUpper = stripped.toUpperCase();
 
-    // Direct identifier match (A, B, C, D or 1, 2, 3, 4)
+    // 1. Direct identifier match (A, B, C, D or 1, 2, 3, 4)
     for (const opt of options) {
       if (opt.identifier.toUpperCase() === upperAnswer) return opt;
       if (opt.identifier.toUpperCase() === strippedUpper) return opt;
     }
 
-    // First non-whitespace char match
-    const firstChar = strippedUpper.charAt(0);
-    if (/^[A-Z0-9]$/.test(firstChar)) {
-      for (const opt of options) {
-        if (opt.identifier.toUpperCase() === firstChar) return opt;
+    // 2. First char match — only if answer is short (likely just the identifier)
+    if (stripped.length <= 3) {
+      const firstChar = strippedUpper.charAt(0);
+      if (/^[A-Z0-9]$/.test(firstChar)) {
+        for (const opt of options) {
+          if (opt.identifier.toUpperCase() === firstChar) return opt;
+        }
       }
     }
 
-    // Exact text match (case-insensitive)
+    // 3. Exact text match (case-insensitive)
     const lowerAnswer = cleanAnswer.toLowerCase();
     for (const opt of options) {
       if (opt.text.toLowerCase().trim() === lowerAnswer) return opt;
     }
 
-    // Partial text match
+    // 4. Extract identifier from verbose AI response
+    // "The answer is C", "The correct option is B", "Option C is correct"
+    const identifierPatterns = [
+      /(?:answer|correct\s+(?:option|answer|choice)|option)\s+(?:is|:)\s*\(?([A-D])\)?/i,
+      /\(?([A-D])\)?\s+is\s+(?:the\s+)?(?:correct|right|answer)/i,
+      /^.*?(?:is|=|:)\s*\(?([A-D])\)?\.?\s*$/i,
+    ];
+    for (const pattern of identifierPatterns) {
+      const match = cleanAnswer.match(pattern);
+      if (match) {
+        const letter = match[1].toUpperCase();
+        for (const opt of options) {
+          if (opt.identifier.toUpperCase() === letter) {
+            devLog('Matched identifier from verbose answer:', letter);
+            return opt;
+          }
+        }
+      }
+    }
+
+    // 5. Extract numbers from verbose answer and match against option text
+    // "The sum is 240" → match option with text "240"
+    const numbers = cleanAnswer.match(/\b(\d+(?:\.\d+)?)\b/g);
+    if (numbers) {
+      for (const num of numbers) {
+        for (const opt of options) {
+          if (opt.text.trim() === num) {
+            devLog('Matched number from verbose answer:', num);
+            return opt;
+          }
+        }
+      }
+    }
+
+    // 6. Partial text match (both directions, but require minimum length)
     for (const opt of options) {
       const optLower = opt.text.toLowerCase().trim();
-      if (optLower.includes(lowerAnswer) || lowerAnswer.includes(optLower)) {
+      if (optLower.length > 1 && (optLower.includes(lowerAnswer) || lowerAnswer.includes(optLower))) {
         return opt;
       }
     }
 
-    // True/False specific
+    // 7. True/False specific
     const tfLower = lowerAnswer.replace(/[^a-z]/g, '');
     if (tfLower === 'true' || tfLower === 'false') {
       for (const opt of options) {
         if (opt.text.toLowerCase().trim() === tfLower) return opt;
+      }
+    }
+
+    // 8. Word-level matching — check if any option text is a distinct word in the answer
+    const answerWords = lowerAnswer.split(/[\s,;.!?()]+/).filter(w => w.length > 1);
+    for (const opt of options) {
+      const optLower = opt.text.toLowerCase().trim();
+      if (optLower.length > 1 && answerWords.includes(optLower)) {
+        devLog('Matched option via word-level:', optLower);
+        return opt;
+      }
+    }
+
+    // 9. Number extraction from both answer and options for numerical matching
+    if (numbers && numbers.length > 0) {
+      for (const opt of options) {
+        const optNumbers = opt.text.match(/\b(\d+(?:\.\d+)?)\b/g);
+        if (optNumbers) {
+          for (const num of numbers) {
+            if (optNumbers.includes(num)) {
+              devLog('Matched via numerical overlap:', num);
+              return opt;
+            }
+          }
+        }
       }
     }
 
@@ -1374,13 +1604,365 @@
   }
 
   // ============================================================
+  // EXPLANATION MODAL (Dev-Only)
+  // Shift+Double-click shows answer with step-by-step explanation
+  // ============================================================
+
+  let explanationModalElement = null;
+
+  function injectExplanationStyles() {
+    if (document.getElementById('qs-explanation-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'qs-explanation-styles';
+    style.textContent = `
+      .qs-modal-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.45);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      }
+      .qs-modal-overlay.qs-visible { opacity: 1; }
+      .qs-modal {
+        background: #fff;
+        border-radius: 16px;
+        box-shadow: 0 25px 60px -12px rgba(0,0,0,0.3);
+        max-width: 560px;
+        width: 92vw;
+        max-height: 82vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        transform: scale(0.95) translateY(10px);
+        transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .qs-modal-overlay.qs-visible .qs-modal {
+        transform: scale(1) translateY(0);
+      }
+      .qs-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px 16px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .qs-modal-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #111;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .qs-modal-badge {
+        background: linear-gradient(135deg, #EEF2FF, #E0E7FF);
+        color: #4338CA;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 100px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .qs-modal-close {
+        width: 32px; height: 32px;
+        border: none;
+        background: transparent;
+        border-radius: 8px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #999;
+        transition: all 0.15s ease;
+        font-size: 20px;
+        line-height: 1;
+      }
+      .qs-modal-close:hover { background: #f5f5f5; color: #333; }
+      .qs-modal-body {
+        padding: 20px 24px;
+        overflow-y: auto;
+        flex: 1;
+      }
+      .qs-modal-section { margin-bottom: 16px; }
+      .qs-modal-section:last-child { margin-bottom: 0; }
+      .qs-modal-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #999;
+        margin-bottom: 6px;
+      }
+      .qs-modal-question {
+        font-size: 14px;
+        color: #333;
+        line-height: 1.6;
+        background: #FAFAFA;
+        padding: 12px 16px;
+        border-radius: 10px;
+        border: 1px solid #f0f0f0;
+      }
+      .qs-modal-answer-box {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        background: linear-gradient(135deg, #ECFDF5, #F0FDF4);
+        border-radius: 10px;
+        border: 1px solid #BBF7D0;
+      }
+      .qs-modal-answer-letter {
+        font-size: 24px;
+        font-weight: 800;
+        color: #059669;
+        min-width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #fff;
+        border-radius: 8px;
+        border: 2px solid #059669;
+      }
+      .qs-modal-answer-text {
+        font-size: 15px;
+        font-weight: 600;
+        color: #065F46;
+        flex: 1;
+      }
+      .qs-modal-explanation {
+        font-size: 14px;
+        color: #374151;
+        line-height: 1.75;
+        padding: 14px 16px;
+        background: #F8FAFC;
+        border-radius: 10px;
+        border: 1px solid #E2E8F0;
+        white-space: pre-wrap;
+      }
+      .qs-modal-footer {
+        display: flex;
+        gap: 10px;
+        padding: 16px 24px 20px;
+        border-top: 1px solid #f0f0f0;
+      }
+      .qs-modal-btn {
+        flex: 1;
+        padding: 10px 16px;
+        border-radius: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        border: none;
+        text-align: center;
+      }
+      .qs-modal-btn-primary {
+        background: #4F46E5;
+        color: white;
+      }
+      .qs-modal-btn-primary:hover { background: #4338CA; }
+      .qs-modal-btn-secondary {
+        background: #F3F4F6;
+        color: #374151;
+      }
+      .qs-modal-btn-secondary:hover { background: #E5E7EB; }
+      .qs-loading-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 32px 16px;
+      }
+      .qs-loading-dots {
+        display: flex;
+        gap: 6px;
+      }
+      .qs-loading-dots span {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: #4F46E5;
+        animation: qs-bounce 1.4s infinite ease-in-out both;
+      }
+      .qs-loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+      .qs-loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+      .qs-loading-dots span:nth-child(3) { animation-delay: 0; }
+      @keyframes qs-bounce {
+        0%, 80%, 100% { transform: scale(0); }
+        40% { transform: scale(1.0); }
+      }
+      .qs-loading-text {
+        font-size: 13px;
+        color: #888;
+      }
+      .qs-modal-error {
+        color: #DC2626;
+        background: #FEF2F2;
+        border: 1px solid #FECACA;
+        padding: 12px 16px;
+        border-radius: 10px;
+        font-size: 13px;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function escapeHTML(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function showExplanationModal(questionText) {
+    if (!IS_DEV) return null;
+    injectExplanationStyles();
+
+    if (explanationModalElement) explanationModalElement.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'qs-modal-overlay';
+    overlay.innerHTML = `
+      <div class="qs-modal">
+        <div class="qs-modal-header">
+          <div class="qs-modal-title">
+            Explanation
+            <span class="qs-modal-badge">AI</span>
+          </div>
+          <button class="qs-modal-close" data-qs-close>&times;</button>
+        </div>
+        <div class="qs-modal-body">
+          <div class="qs-modal-section">
+            <div class="qs-modal-label">Question</div>
+            <div class="qs-modal-question">${escapeHTML(questionText.substring(0, 500))}</div>
+          </div>
+          <div class="qs-modal-section" id="qs-answer-section" style="display:none">
+            <div class="qs-modal-label">Answer</div>
+            <div class="qs-modal-answer-box">
+              <div class="qs-modal-answer-letter" id="qs-answer-letter"></div>
+              <div class="qs-modal-answer-text" id="qs-answer-text"></div>
+            </div>
+          </div>
+          <div class="qs-modal-section" id="qs-explanation-section">
+            <div class="qs-modal-label">Explanation</div>
+            <div class="qs-loading-container" id="qs-loading">
+              <div class="qs-loading-dots"><span></span><span></span><span></span></div>
+              <div class="qs-loading-text">Analyzing question...</div>
+            </div>
+            <div class="qs-modal-explanation" id="qs-explanation-text" style="display:none"></div>
+            <div class="qs-modal-error" id="qs-explanation-error" style="display:none"></div>
+          </div>
+        </div>
+        <div class="qs-modal-footer">
+          <button class="qs-modal-btn qs-modal-btn-secondary" data-qs-close>Close</button>
+          <button class="qs-modal-btn qs-modal-btn-primary" id="qs-apply-btn" style="display:none">Apply Answer</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+    explanationModalElement = overlay;
+
+    requestAnimationFrame(() => overlay.classList.add('qs-visible'));
+
+    // Close handlers
+    overlay.querySelectorAll('[data-qs-close]').forEach(btn => {
+      btn.addEventListener('click', () => hideExplanationModal());
+    });
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) hideExplanationModal();
+    });
+
+    return overlay;
+  }
+
+  function updateExplanationModal(answer, explanation, domRefs, options) {
+    if (!explanationModalElement) return;
+
+    const answerSection = explanationModalElement.querySelector('#qs-answer-section');
+    const answerLetter = explanationModalElement.querySelector('#qs-answer-letter');
+    const answerText = explanationModalElement.querySelector('#qs-answer-text');
+    const loading = explanationModalElement.querySelector('#qs-loading');
+    const explanationText = explanationModalElement.querySelector('#qs-explanation-text');
+    const applyBtn = explanationModalElement.querySelector('#qs-apply-btn');
+
+    // Determine the answer letter and matched option text
+    let displayLetter = answer;
+    let displayText = '';
+    if (options && options.length > 0) {
+      const matched = findMatchingOption(options.map(o => ({ text: o.text, identifier: o.identifier, value: o.value })), answer);
+      if (matched) {
+        displayLetter = matched.identifier;
+        displayText = matched.text;
+      }
+    }
+
+    if (answerSection && answerLetter) {
+      answerLetter.textContent = displayLetter.length <= 2 ? displayLetter : displayLetter.charAt(0);
+      answerText.textContent = displayText || answer;
+      answerSection.style.display = '';
+    }
+
+    if (loading) loading.style.display = 'none';
+
+    if (explanationText && explanation) {
+      explanationText.textContent = explanation;
+      explanationText.style.display = '';
+    }
+
+    if (applyBtn && domRefs) {
+      applyBtn.style.display = '';
+      applyBtn.addEventListener('click', () => {
+        applyAnswer(domRefs, answer);
+        hideExplanationModal();
+      });
+    }
+  }
+
+  function showExplanationError(errorMsg) {
+    if (!explanationModalElement) return;
+    const loading = explanationModalElement.querySelector('#qs-loading');
+    const errorEl = explanationModalElement.querySelector('#qs-explanation-error');
+    if (loading) loading.style.display = 'none';
+    if (errorEl) {
+      errorEl.textContent = errorMsg;
+      errorEl.style.display = '';
+    }
+  }
+
+  function hideExplanationModal() {
+    if (!explanationModalElement) return;
+    explanationModalElement.classList.remove('qs-visible');
+    setTimeout(() => {
+      explanationModalElement?.remove();
+      explanationModalElement = null;
+    }, 200);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && explanationModalElement) {
+      hideExplanationModal();
+    }
+  });
+
+  // ============================================================
   // DOUBLE-CLICK HANDLER
   // ============================================================
 
   document.addEventListener('dblclick', async (e) => {
     if (!isActive || processing) return;
 
-    devLog('--- DOUBLE-CLICK ---');
+    const isExplainMode = IS_DEV && e.shiftKey;
+
+    devLog('--- DOUBLE-CLICK ---', isExplainMode ? '(EXPLAIN MODE)' : '');
     devLog('Target:', e.target.tagName,
            'class:', e.target.className?.toString()?.substring(0, 60),
            'id:', e.target.id?.substring(0, 30),
@@ -1405,19 +1987,48 @@
              'images:', context.images?.length || 0,
              'question:', context.questionText?.substring(0, 80));
 
-      const response = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage(
-          { type: 'PROCESS_QUESTION', data: context },
-          (resp) => {
-            if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-            if (resp.success) resolve(resp.answer);
-            else reject(new Error(resp.error));
-          }
-        );
-      });
+      if (isExplainMode) {
+        // --- Explanation Mode: show modal with answer + explanation ---
+        const modal = showExplanationModal(context.questionText);
+        if (!modal) {
+          processing = false;
+          return;
+        }
 
-      devLog('AI answer:', response, '— total time:', Date.now() - startTime, 'ms');
-      applyAnswer(domRefs, response);
+        try {
+          const response = await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage(
+              { type: 'PROCESS_EXPLANATION', data: context },
+              (resp) => {
+                if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                if (resp.success) resolve(resp);
+                else reject(new Error(resp.error));
+              }
+            );
+          });
+
+          devLog('Explanation received — total time:', Date.now() - startTime, 'ms');
+          updateExplanationModal(response.answer, response.explanation, domRefs, context.options);
+        } catch (err) {
+          devError('Explanation error:', err.message);
+          showExplanationError('Failed to get explanation: ' + err.message);
+        }
+      } else {
+        // --- Normal Mode: auto-answer ---
+        const response = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage(
+            { type: 'PROCESS_QUESTION', data: context },
+            (resp) => {
+              if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+              if (resp.success) resolve(resp.answer);
+              else reject(new Error(resp.error));
+            }
+          );
+        });
+
+        devLog('AI answer:', response, '— total time:', Date.now() - startTime, 'ms');
+        applyAnswer(domRefs, response);
+      }
     } catch (err) {
       devError('Error processing question:', err.message);
       devError('Stack:', err.stack);
