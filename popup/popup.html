@@ -114,6 +114,64 @@
           <span class="range-value" id="highlightDurationValue">4s</span>
         </div>
       </div>
+
+      <!-- Advanced Features -->
+      <div class="section">
+        <label class="section-label">Advanced Features</label>
+
+        <div class="switch-row" style="margin-bottom: 8px">
+          <div class="switch-info">
+            <strong style="font-size: 12px">Selection Actions</strong>
+            <small class="help-text">Solve / Explain on text highlight</small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="featureHighlight">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="switch-row" style="margin-bottom: 8px">
+          <div class="switch-info">
+            <strong style="font-size: 12px">Rephrase</strong>
+            <small class="help-text">Rephrase option on text selection</small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="featureRephrase">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="switch-row" style="margin-bottom: 8px">
+          <div class="switch-info">
+            <strong style="font-size: 12px">Draw to Solve</strong>
+            <small class="help-text">Draw rectangle to capture &amp; solve <kbd>Ctrl+Shift+D</kbd></small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="featureDrawRegion">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="switch-row" style="margin-bottom: 8px">
+          <div class="switch-info">
+            <strong style="font-size: 12px">Snap It</strong>
+            <small class="help-text">Capture screen to solve <kbd>Ctrl+Shift+S</kbd></small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="featureSnapIt">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="section" style="margin-top: 8px">
+          <label class="section-label">Modal Size</label>
+          <select id="modalSize" class="select">
+            <option value="small">Small (compact)</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+      </div>
     </div>
 
     <!-- Models Tab -->
@@ -257,6 +315,8 @@
           <li>Press <kbd>Ctrl+Shift+U</kbd> to activate on any page</li>
           <li>Double-click on any question to get the answer</li>
           <li><kbd>Shift</kbd>+Double-click for answer with explanation</li>
+          <li><kbd>Ctrl+Shift+D</kbd> Draw region to capture &amp; solve</li>
+          <li><kbd>Ctrl+Shift+S</kbd> Snap full screen to solve</li>
         </ol>
       </div>
 
