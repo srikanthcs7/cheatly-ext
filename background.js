@@ -698,7 +698,7 @@ chrome.commands.onCommand.addListener(async (command) => {
       tabId: tab.id
     });
     chrome.action.setBadgeBackgroundColor({
-      color: state.active ? '#4CAF50' : '#666',
+      color: state.active ? '#2dd4bf' : '#666',
       tabId: tab.id
     });
 
@@ -785,7 +785,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         tabId: tab.id
       });
       chrome.action.setBadgeBackgroundColor({
-        color: state.active ? '#4CAF50' : '#666',
+        color: state.active ? '#2dd4bf' : '#666',
         tabId: tab.id
       });
 
@@ -829,7 +829,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     const state = getTabState(tabId);
     if (state.active) {
       chrome.action.setBadgeText({ text: 'ON', tabId });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50', tabId });
+      chrome.action.setBadgeBackgroundColor({ color: '#2dd4bf', tabId });
     }
   }
 });

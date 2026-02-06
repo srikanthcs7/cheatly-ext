@@ -123,11 +123,11 @@ def generate_icon(size):
             d = rounded_rect_sdf(x + 0.5, y + 0.5, center, center, half_w, half_h, corner_radius)
 
             if d < 0.75:
-                # Diagonal gradient: top-left (#4F46E5 indigo-600) to bottom-right (#7C3AED violet-600)
+                # Diagonal gradient: top-left (#0d1117) to bottom-right (#111820) near-black
                 t = (x + y) / (2 * size)
-                cr = int(79 + (124 - 79) * t)
-                cg = int(70 + (58 - 70) * t)
-                cb = int(229 + (237 - 229) * t)
+                cr = int(13 + (17 - 13) * t)
+                cg = int(17 + (24 - 17) * t)
+                cb = int(23 + (32 - 23) * t)
 
                 # Anti-aliasing at edges
                 if d > -0.75:
@@ -148,39 +148,87 @@ def generate_icon(size):
     return create_png(size, size, pixels)
 
 
+def lerp_color(t):
+    """Interpolate between blue (#3b82f6) and teal (#2dd4bf) based on t (0..1)."""
+    r = int(59 + (45 - 59) * t)
+    g = int(130 + (212 - 130) * t)
+    b = int(246 + (191 - 246) * t)
+    return r, g, b
+
+
+def draw_gradient_arc(pixels, size, cx, cy, radius, start_angle, end_angle, thickness):
+    """Draw a thick arc with gradient color from blue to teal."""
+    circumference = abs(end_angle - start_angle) * radius
+    steps = max(int(circumference * 3), 60)
+    for i in range(steps + 1):
+        t = i / steps
+        angle = start_angle + (end_angle - start_angle) * t
+        px = cx + radius * math.cos(angle)
+        py = cy + radius * math.sin(angle)
+        cr, cg, cb = lerp_color(t)
+        for dx in range(-thickness - 1, thickness + 2):
+            for dy in range(-thickness - 1, thickness + 2):
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist <= thickness + 0.5:
+                    alpha = 245
+                    if dist > thickness - 0.5:
+                        alpha = int(245 * max(0, (thickness + 0.5 - dist)))
+                    if alpha > 0:
+                        set_pixel_blend(pixels, size, px + dx, py + dy, cr, cg, cb, alpha)
+
+
+def draw_gradient_line(pixels, size, x0, y0, x1, y1, thickness, t_start, t_end):
+    """Draw a thick line with gradient color from t_start to t_end."""
+    length = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
+    if length == 0:
+        return
+    steps = int(length * 3) + 1
+    for i in range(steps + 1):
+        t = i / steps
+        px = x0 + (x1 - x0) * t
+        py = y0 + (y1 - y0) * t
+        color_t = t_start + (t_end - t_start) * t
+        cr, cg, cb = lerp_color(color_t)
+        for dx in range(-thickness - 1, thickness + 2):
+            for dy in range(-thickness - 1, thickness + 2):
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist <= thickness + 0.5:
+                    alpha = 245
+                    if dist > thickness - 0.5:
+                        alpha = int(245 * max(0, (thickness + 0.5 - dist)))
+                    if alpha > 0:
+                        set_pixel_blend(pixels, size, px + dx, py + dy, cr, cg, cb, alpha)
+
+
 def draw_q_with_check(pixels, size):
     """Draw a 'Q' letter whose tail becomes a checkmark. For 48px and 128px."""
-    s = size / 128.0  # Scale factor relative to 128px
-
     # Q circle parameters
     cx = size * 0.46
     cy = size * 0.44
     q_radius = size * 0.24
     thickness = max(2, int(size * 0.055))
 
-    # Draw the Q circle (open at bottom-right, ~300 degrees)
-    # Start from bottom-right gap, go counter-clockwise almost all the way around
+    # Draw the Q circle with gradient (open at bottom-right, ~300 degrees)
     gap_angle = math.radians(35)
     start_angle = gap_angle
     end_angle = math.radians(360) - math.radians(10)
-    draw_arc(pixels, size, cx, cy, q_radius, start_angle, end_angle, thickness)
+    draw_gradient_arc(pixels, size, cx, cy, q_radius, start_angle, end_angle, thickness)
 
     # Checkmark tail starting from bottom-right of Q
-    # The check starts at the bottom of the Q gap, dips down, then goes up-right
     q_bottom_x = cx + q_radius * math.cos(gap_angle)
     q_bottom_y = cy + q_radius * math.sin(gap_angle)
 
-    # Checkmark: short down-left stroke, then long up-right stroke
+    # Checkmark: short down stroke, then long up-right stroke
     check_dip_x = q_bottom_x + size * 0.02
     check_dip_y = q_bottom_y + size * 0.12
 
     check_end_x = q_bottom_x + size * 0.22
     check_end_y = q_bottom_y - size * 0.08
 
-    # Down stroke of checkmark
-    draw_thick_line(pixels, size, q_bottom_x, q_bottom_y, check_dip_x, check_dip_y, thickness)
-    # Up stroke of checkmark
-    draw_thick_line(pixels, size, check_dip_x, check_dip_y, check_end_x, check_end_y, thickness)
+    # Down stroke of checkmark (teal)
+    draw_gradient_line(pixels, size, q_bottom_x, q_bottom_y, check_dip_x, check_dip_y, thickness, 0.7, 0.85)
+    # Up stroke of checkmark (teal → bright teal)
+    draw_gradient_line(pixels, size, check_dip_x, check_dip_y, check_end_x, check_end_y, thickness, 0.85, 1.0)
 
 
 def draw_q_small(pixels, size):
@@ -190,11 +238,11 @@ def draw_q_small(pixels, size):
     q_radius = size * 0.22
     thickness = max(1, int(size * 0.09))
 
-    # Full Q circle (nearly closed)
+    # Full Q circle with gradient (nearly closed)
     gap_angle = math.radians(30)
     start_angle = gap_angle
     end_angle = math.radians(355)
-    draw_arc(pixels, size, cx, cy, q_radius, start_angle, end_angle, thickness)
+    draw_gradient_arc(pixels, size, cx, cy, q_radius, start_angle, end_angle, thickness)
 
     # Simple checkmark tail
     q_bx = cx + q_radius * math.cos(gap_angle)
@@ -206,8 +254,8 @@ def draw_q_small(pixels, size):
     end_x = q_bx + size * 0.20
     end_y = q_by - size * 0.06
 
-    draw_thick_line(pixels, size, q_bx, q_by, dip_x, dip_y, thickness)
-    draw_thick_line(pixels, size, dip_x, dip_y, end_x, end_y, thickness)
+    draw_gradient_line(pixels, size, q_bx, q_by, dip_x, dip_y, thickness, 0.7, 0.85)
+    draw_gradient_line(pixels, size, dip_x, dip_y, end_x, end_y, thickness, 0.85, 1.0)
 
 
 def main():

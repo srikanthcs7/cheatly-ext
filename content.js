@@ -1219,7 +1219,7 @@
       transition: element.style.transition
     };
     element.style.transition = 'outline-color 0.3s ease';
-    element.style.outline = '2px solid rgba(76, 175, 80, 0.45)';
+    element.style.outline = '2px solid rgba(45, 212, 191, 0.4)';
     element.style.outlineOffset = '2px';
 
     setTimeout(() => {

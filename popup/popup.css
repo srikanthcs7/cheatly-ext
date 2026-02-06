@@ -1,6 +1,6 @@
 /* ============================================================
    QuizSolve - Popup Styles
-   Clean, modern design with dark theme
+   Dark theme with teal/cyan accents — matches quizsolve.vercel.app
    ============================================================ */
 
 * {
@@ -10,22 +10,26 @@
 }
 
 :root {
-  --bg-primary: #0f1117;
-  --bg-secondary: #1a1d27;
-  --bg-tertiary: #242736;
-  --bg-hover: #2a2e3f;
-  --border: #2e3348;
-  --text-primary: #e4e6ef;
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #111118;
+  --bg-tertiary: #191920;
+  --bg-hover: #1f1f2a;
+  --border: #252530;
+  --border-accent: #2dd4bf30;
+  --text-primary: #e8e8ec;
   --text-secondary: #8b8fa3;
-  --text-muted: #5c6078;
-  --accent: #6c5ce7;
-  --accent-hover: #7c6ff7;
-  --accent-glow: rgba(108, 92, 231, 0.2);
-  --success: #00d68f;
-  --success-bg: rgba(0, 214, 143, 0.1);
-  --danger: #ff6b6b;
-  --radius: 8px;
-  --radius-sm: 6px;
+  --text-muted: #5c5f70;
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-dim: #1a9a88;
+  --accent-glow: rgba(45, 212, 191, 0.12);
+  --gradient-start: #3b82f6;
+  --gradient-end: #2dd4bf;
+  --success: #2dd4bf;
+  --success-bg: rgba(45, 212, 191, 0.08);
+  --danger: #f87171;
+  --radius: 10px;
+  --radius-sm: 7px;
 }
 
 body {
@@ -51,6 +55,7 @@ body {
   justify-content: space-between;
   padding: 16px;
   border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
 }
 
 .header-left {
@@ -63,20 +68,24 @@ body {
   width: 36px;
   height: 36px;
   border-radius: var(--radius);
-  background: linear-gradient(135deg, var(--accent), #a29bfe);
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 14px;
+  font-size: 13px;
   color: #fff;
   letter-spacing: -0.5px;
+  box-shadow: 0 0 16px rgba(45, 212, 191, 0.2);
 }
 
 .title {
   font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .subtitle {
@@ -118,7 +127,7 @@ body {
   height: 18px;
   left: 2px;
   bottom: 2px;
-  background: var(--text-secondary);
+  background: var(--text-muted);
   border-radius: 50%;
   transition: all 0.25s ease;
 }
@@ -126,6 +135,7 @@ body {
 .toggle input:checked + .toggle-slider {
   background: var(--accent);
   border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
 }
 
 .toggle input:checked + .toggle-slider::before {
@@ -149,12 +159,12 @@ body {
   height: 8px;
   border-radius: 50%;
   background: var(--text-muted);
-  transition: background 0.3s ease;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 
 .status-dot.active {
-  background: var(--success);
-  box-shadow: 0 0 6px var(--success);
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent), 0 0 3px var(--accent);
 }
 
 .status-text {
@@ -169,6 +179,7 @@ body {
   padding: 2px 6px;
   border-radius: 4px;
   font-family: monospace;
+  border: 1px solid var(--border);
 }
 
 /* ---- Tabs ---- */
@@ -184,7 +195,7 @@ body {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
@@ -239,11 +250,11 @@ body {
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .input:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-dim);
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
@@ -276,7 +287,8 @@ body {
 
 .btn-icon:hover {
   background: var(--bg-hover);
-  color: var(--text-primary);
+  color: var(--accent);
+  border-color: var(--border-accent);
 }
 
 .btn-icon-sm {
@@ -309,7 +321,7 @@ body {
 }
 
 .select:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-dim);
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
@@ -334,7 +346,7 @@ body {
 
 .radio-option:hover {
   background: var(--bg-hover);
-  border-color: var(--accent);
+  border-color: var(--border-accent);
 }
 
 .radio-option.compact {
@@ -388,6 +400,7 @@ body {
   background: var(--accent);
   cursor: pointer;
   border: 2px solid var(--bg-primary);
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 .range-value {
@@ -410,6 +423,7 @@ body {
   font-weight: 600;
   font-size: 13px;
   margin-bottom: 4px;
+  color: var(--text-primary);
 }
 
 .info-desc {
@@ -512,13 +526,13 @@ kbd {
 .notification.success {
   background: var(--success-bg);
   color: var(--success);
-  border: 1px solid rgba(0, 214, 143, 0.2);
+  border: 1px solid rgba(45, 212, 191, 0.2);
 }
 
 .notification.error {
-  background: rgba(255, 107, 107, 0.1);
+  background: rgba(248, 113, 113, 0.08);
   color: var(--danger);
-  border: 1px solid rgba(255, 107, 107, 0.2);
+  border: 1px solid rgba(248, 113, 113, 0.2);
 }
 
 /* ---- Smart Switch Row ---- */
@@ -581,9 +595,9 @@ kbd {
 
 .progress-bar {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--gradient-start), var(--gradient-end));
   border-radius: 3px;
-  transition: width 0.3s ease, background 0.3s ease;
+  transition: width 0.3s ease;
   min-width: 0;
 }
 
@@ -612,7 +626,7 @@ kbd {
 .rate-limit-value {
   font-size: 13px;
   font-weight: 600;
-  color: var(--success);
+  color: var(--accent);
 }
 
 .rate-limit-value.low {
@@ -634,4 +648,5 @@ kbd {
   padding: 4px 8px;
   border-radius: 4px;
   flex: 1;
+  border: 1px solid var(--border);
 }
