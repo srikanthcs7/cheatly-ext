@@ -3,18 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QuizSolve</title>
+  <title>AI Quiz Solve</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="app">
+    <!-- Announcement Banner (fetched from API) -->
+    <div class="announcement-banner" id="announcementBanner" style="display:none">
+      <div class="announcement-banner-content">
+        <span class="announcement-banner-emoji" id="bannerEmoji"></span>
+        <span class="announcement-banner-title" id="bannerTitle"></span>
+        <a class="announcement-banner-cta" id="bannerCta" target="_blank" style="display:none"></a>
+      </div>
+      <button class="announcement-banner-close" id="bannerClose" title="Dismiss">×</button>
+    </div>
+
     <!-- Header -->
     <header class="header">
       <div class="header-left">
         <div class="logo">QS</div>
         <div>
-          <h1 class="title">QuizSolve</h1>
-          <p class="subtitle" id="version">v1.0.0</p>
+          <h1 class="title">AI Quiz Solve</h1>
+          <p class="subtitle" id="version"></p>
         </div>
       </div>
       <div class="toggle-wrap">
@@ -42,41 +52,54 @@
 
     <!-- Settings Tab -->
     <div class="tab-content active" id="tab-settings">
+      <!-- Account Section -->
+      <div class="section" id="accountSection">
+        <label class="section-label">Account</label>
+        <div class="account-card" id="accountCard">
+          <div class="account-card-top">
+            <span class="plan-badge plan-free" id="planBadge">Free Plan</span>
+            <button class="btn-upgrade" id="btnUpgrade">Upgrade to Pro</button>
+          </div>
+          <div class="account-logged-out" id="accountLoggedOut">
+            <div class="token-row">
+              <input type="password" id="tokenInput" class="input" placeholder="Paste your login token...">
+              <button class="btn-icon" id="btnLogin" title="Login">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="account-logged-in" id="accountLoggedIn" style="display:none">
+            <div class="account-user-row">
+              <span class="account-email" id="accountEmail">user@example.com</span>
+              <button class="btn-logout" id="btnLogout">Logout</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- API Mode Section -->
       <div class="section">
         <label class="section-label">API Mode</label>
         <div class="radio-group">
           <label class="radio-option compact">
-            <input type="radio" name="apiMode" value="quizsolve" checked>
+            <input type="radio" name="apiMode" value="quizsolve_free" checked>
             <span class="radio-label">
-              <strong>QuizSolve API</strong>
-              <small>Free — no key needed</small>
+              <strong>QuizSolve Free</strong>
+              <small>20 questions/day — no key needed</small>
             </span>
           </label>
           <label class="radio-option compact">
-            <input type="radio" name="apiMode" value="own_key">
+            <input type="radio" name="apiMode" value="quizsolve_pro">
             <span class="radio-label">
-              <strong>Own API Key</strong>
-              <small>Use your own provider key</small>
+              <strong>QuizSolve Pro</strong>
+              <small>Unlimited — requires login</small>
             </span>
           </label>
         </div>
       </div>
 
-      <!-- API Key Section (only shown in own_key mode) -->
-      <div class="section" id="apiKeySection" style="display:none">
-        <label class="section-label">API Key</label>
-        <div class="api-key-row">
-          <input type="password" id="apiKey" class="input" placeholder="Enter your API key...">
-          <button class="btn-icon" id="toggleKeyVisibility" title="Show/Hide">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-              <circle cx="12" cy="12" r="3"/>
-            </svg>
-          </button>
-        </div>
-        <p class="help-text" id="apiKeyHelp">Required for the selected provider</p>
-      </div>
 
       <!-- Answer Mode Section -->
       <div class="section">
@@ -119,6 +142,17 @@
       <div class="section">
         <label class="section-label">Advanced Features</label>
 
+        <div class="switch-row" style="margin-bottom: 8px" title="When off, shortcuts and selection actions still work — only double-click auto-answering is disabled">
+          <div class="switch-info">
+            <strong style="font-size: 12px">Double-click to Solve</strong>
+            <small class="help-text">Answer questions on double-click</small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="featureDblClickSolve" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
         <div class="switch-row" style="margin-bottom: 8px">
           <div class="switch-info">
             <strong style="font-size: 12px">Selection Actions</strong>
@@ -141,24 +175,35 @@
           </label>
         </div>
 
-        <div class="switch-row" style="margin-bottom: 8px">
+        <div class="switch-row switch-row-disabled" style="margin-bottom: 8px" title="Coming soon">
           <div class="switch-info">
-            <strong style="font-size: 12px">Draw to Solve</strong>
+            <strong style="font-size: 12px">Draw to Solve <span class="coming-soon-badge">Coming Soon</span></strong>
             <small class="help-text">Draw rectangle to capture &amp; solve <kbd>Ctrl+Shift+D</kbd></small>
           </div>
           <label class="toggle toggle-sm">
-            <input type="checkbox" id="featureDrawRegion">
+            <input type="checkbox" id="featureDrawRegion" disabled>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="switch-row switch-row-disabled" style="margin-bottom: 8px" title="Coming soon">
+          <div class="switch-info">
+            <strong style="font-size: 12px">Snap It <span class="coming-soon-badge">Coming Soon</span></strong>
+            <small class="help-text">Capture screen to solve <kbd>Ctrl+Shift+S</kbd></small>
+          </div>
+          <label class="toggle toggle-sm">
+            <input type="checkbox" id="featureSnapIt" disabled>
             <span class="toggle-slider"></span>
           </label>
         </div>
 
         <div class="switch-row" style="margin-bottom: 8px">
           <div class="switch-info">
-            <strong style="font-size: 12px">Snap It</strong>
-            <small class="help-text">Capture screen to solve <kbd>Ctrl+Shift+S</kbd></small>
+            <strong style="font-size: 12px">Show Notifications</strong>
+            <small class="help-text">Toast messages &amp; loading indicators</small>
           </div>
           <label class="toggle toggle-sm">
-            <input type="checkbox" id="featureSnapIt">
+            <input type="checkbox" id="featureNotifications">
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -176,61 +221,7 @@
 
     <!-- Models Tab -->
     <div class="tab-content" id="tab-models">
-      <!-- BYOK model settings (shown when own_key mode) -->
-      <div id="byokModelsSection">
-        <div class="section">
-          <label class="section-label">AI Provider</label>
-          <select id="providerSelect" class="select">
-            <option value="openai">OpenAI</option>
-            <option value="gemini">Google Gemini</option>
-            <option value="anthropic">Anthropic</option>
-          </select>
-        </div>
-
-        <div class="section">
-          <label class="section-label">Model</label>
-          <select id="modelSelect" class="select">
-            <!-- Populated dynamically -->
-          </select>
-        </div>
-
-        <div class="section model-info">
-          <div class="info-card" id="modelInfo">
-            <p class="info-title">GPT-4.1 Nano</p>
-            <p class="info-desc">Fastest and most cost-effective. Great for text-only questions.</p>
-          </div>
-        </div>
-
-        <!-- Smart Model Switching -->
-        <div class="section">
-          <div class="switch-row">
-            <div class="switch-info">
-              <label class="section-label" style="margin-bottom:0">Smart Switch</label>
-              <small class="help-text">Auto-upgrade to powerful model for image questions</small>
-            </div>
-            <label class="toggle toggle-sm">
-              <input type="checkbox" id="smartSwitch">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-        </div>
-
-        <!-- Vision Model (shown when smart switch is on) -->
-        <div class="section" id="visionModelSection" style="display:none">
-          <label class="section-label">Vision Model (for images)</label>
-          <select id="visionModelSelect" class="select">
-            <!-- Populated dynamically -->
-          </select>
-        </div>
-
-        <!-- Provider-specific API key links -->
-        <div class="section">
-          <a class="link" id="getApiKeyLink" href="#" target="_blank">Get API Key →</a>
-        </div>
-      </div>
-
-      <!-- QuizSolve API info (shown when quizsolve mode) -->
-      <div id="quizsolveModelsSection" style="display:none">
+      <div id="quizsolveModelsSection">
         <div class="section">
           <div class="info-card">
             <p class="info-title">QuizSolve API</p>
@@ -262,7 +253,7 @@
         <div class="progress-bar-container">
           <div class="progress-bar" id="usageProgressBar" style="width: 0%"></div>
         </div>
-        <p class="help-text" id="usageLimitText">Free tier: 1000/day</p>
+        <p class="help-text" id="usageLimitText">Free plan: 20/day</p>
       </div>
 
       <div class="section">
@@ -310,14 +301,23 @@
       <div class="help-section">
         <h3>How to Use</h3>
         <ol class="help-list">
-          <li>Choose API mode in Settings (QuizSolve API or own key)</li>
-          <li>If using own key, enter it and select model</li>
+          <li>Choose API mode in Settings (Free or Pro)</li>
           <li>Press <kbd>Ctrl+Shift+U</kbd> to activate on any page</li>
           <li>Double-click on any question to get the answer</li>
           <li><kbd>Shift</kbd>+Double-click for answer with explanation</li>
           <li><kbd>Ctrl+Shift+D</kbd> Draw region to capture &amp; solve</li>
           <li><kbd>Ctrl+Shift+S</kbd> Snap full screen to solve</li>
         </ol>
+      </div>
+
+      <div class="help-section">
+        <h3>Double-click Not Working?</h3>
+        <p class="help-text" style="margin-bottom: 6px">On some websites, double-click may not work for certain questions. Try switching the answer mode:</p>
+        <ul class="help-list">
+          <li><strong>Highlight</strong> — subtly highlights the correct option without interacting with the page</li>
+          <li><strong>Clipboard</strong> — copies the answer to your clipboard silently, no page interaction at all</li>
+        </ul>
+        <p class="help-text" style="margin-top: 6px">You can change the answer mode in <strong>Settings → Answer Mode</strong>.</p>
       </div>
 
       <div class="help-section">
@@ -339,13 +339,12 @@
         <ul class="help-list">
           <li>Auto-detects images, diagrams, charts in questions</li>
           <li>Sends visuals to AI for accurate answers</li>
-          <li>Smart Switch auto-upgrades model for image questions</li>
           <li>Works with screenshots, graphs, code snippets</li>
         </ul>
       </div>
 
       <div class="help-section">
-        <h3>Stealth Features</h3>
+        <h3>Minimal UI Design</h3>
         <ul class="help-list">
           <li>No visible UI on the page</li>
           <li>Off by default — activate only when needed</li>
@@ -354,10 +353,41 @@
         </ul>
       </div>
 
+      <div class="help-section">
+        <h3>Need Help?</h3>
+        <p class="help-text">If you need further assistance, reach out to us at:</p>
+        <a href="mailto:aiquizsolve@gmail.com" class="link" style="margin-top: 4px; display: inline-block;">aiquizsolve@gmail.com</a>
+      </div>
+
       <div class="help-section footer-link">
-        <a href="https://quizsolve.vercel.app/" target="_blank" class="link">Visit quizsolve.vercel.app →</a>
+        <a href="https://getquizsolve.com/" target="_blank" class="link">Visit getquizsolve.com →</a>
       </div>
     </div>
+  </div>
+
+  <!-- Review Prompt -->
+  <div class="review-prompt" id="reviewPrompt" style="display:none">
+    <div class="review-prompt-content">
+      <span class="review-prompt-emoji">⭐</span>
+      <p class="review-prompt-headline">Enjoying AI Quiz Solve?</p>
+      <p class="review-prompt-sub">Your feedback helps us improve!</p>
+      <div class="review-prompt-actions">
+        <button class="review-prompt-rate" id="btnRate">Rate Us</button>
+        <button class="review-prompt-dismiss" id="btnReviewDismiss">Maybe Later</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rate Limit Warning Banner -->
+  <div class="rate-banner" id="rateBanner" style="display:none">
+    <div class="rate-banner-text">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      <span id="rateBannerMsg">Daily limit reached</span>
+    </div>
+    <button class="rate-banner-btn" id="rateBannerUpgrade">Upgrade to Pro</button>
   </div>
 
   <script src="popup.js"></script>
