@@ -1,16 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "QuizSolve",
-  "version": "1.0.0",
-  "description": "Your intelligent study companion for online learning",
-  "permissions": [
-    "activeTab",
-    "storage",
-    "scripting"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "name": "AI Quiz Solve",
+  "version": "1.1.1",
+  "description": "AI quiz solver with stealth mode. Instant answers with explanations. Canvas, Blackboard, Moodle, Google Forms & more.",
+  "permissions": ["activeTab", "storage", "scripting", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  },
   "background": {
     "service_worker": "background.js"
   },

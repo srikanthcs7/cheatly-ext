@@ -5,8 +5,12 @@
 // ============================================================
 
 (function () {
-  if (window.__quizSolveLoaded) return;
-  window.__quizSolveLoaded = true;
+  // Symbol guard — tamper-proof, non-enumerable, non-writable
+  const _qs_loaded_key = Symbol.for('__qs_content_loaded_' + chrome.runtime.id);
+  if (window[_qs_loaded_key]) return;
+  Object.defineProperty(window, _qs_loaded_key, {
+    value: true, writable: false, configurable: false, enumerable: false
+  });
 
   // ---- Dev Mode Detection ----
   const IS_DEV = !('update_url' in chrome.runtime.getManifest());
@@ -35,16 +39,20 @@
   let featureRephrase = false;
   let featureDrawRegion = false;
   let featureSnapIt = false;
+  let featureNotifications = false; // off by default — stealth mode
+  let featureDblClickSolve = true;
   let modalSize = 'small'; // 'small' | 'medium' | 'large'
 
   chrome.storage.local.get([
     'featureHighlight', 'featureRephrase', 'featureDrawRegion',
-    'featureSnapIt', 'modalSize'
+    'featureSnapIt', 'featureNotifications', 'featureDblClickSolve', 'modalSize'
   ], (result) => {
     featureHighlight = result.featureHighlight || false;
     featureRephrase = result.featureRephrase || false;
     featureDrawRegion = result.featureDrawRegion || false;
     featureSnapIt = result.featureSnapIt || false;
+    featureNotifications = result.featureNotifications || false;
+    featureDblClickSolve = result.featureDblClickSolve !== false;
     modalSize = result.modalSize || 'small';
   });
 
@@ -55,8 +63,128 @@
     if (changes.featureRephrase) featureRephrase = changes.featureRephrase.newValue;
     if (changes.featureDrawRegion) featureDrawRegion = changes.featureDrawRegion.newValue;
     if (changes.featureSnapIt) featureSnapIt = changes.featureSnapIt.newValue;
+    if (changes.featureNotifications) featureNotifications = changes.featureNotifications.newValue;
+    if (changes.featureDblClickSolve) featureDblClickSolve = changes.featureDblClickSolve.newValue !== false;
     if (changes.modalSize) modalSize = changes.modalSize.newValue;
   });
+
+  // ============================================================
+  // TOAST NOTIFICATION SYSTEM
+  // ============================================================
+
+  function injectToastStyles() {
+    if (document.getElementById('qs-toast-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'qs-toast-styles';
+    style.textContent = `
+      .qs-toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 2147483647;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 13px;
+        font-weight: 500;
+        color: #fff;
+        background: #1a1a2e;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+        opacity: 0;
+        transform: translateY(12px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        pointer-events: none;
+        max-width: 320px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .qs-toast.qs-toast-visible {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      .qs-toast-success { border-left: 3px solid #2dd4bf; }
+      .qs-toast-error { border-left: 3px solid #f87171; }
+      .qs-toast-info { border-left: 3px solid #60a5fa; }
+      .qs-toast-loading { border-left: 3px solid #a78bfa; }
+      .qs-toast-loading .qs-toast-dots {
+        display: inline-flex;
+        gap: 3px;
+      }
+      .qs-toast-loading .qs-toast-dots span {
+        width: 5px; height: 5px;
+        border-radius: 50%;
+        background: #a78bfa;
+        animation: qs-bounce 1.4s infinite ease-in-out both;
+      }
+      .qs-toast-loading .qs-toast-dots span:nth-child(1) { animation-delay: -0.32s; }
+      .qs-toast-loading .qs-toast-dots span:nth-child(2) { animation-delay: -0.16s; }
+      .qs-toast-loading .qs-toast-dots span:nth-child(3) { animation-delay: 0s; }
+      .qs-processing {
+        outline: 2px solid rgba(45, 212, 191, 0.4) !important;
+        outline-offset: 2px !important;
+        animation: qs-pulse-outline 1.5s ease-in-out infinite !important;
+      }
+      @keyframes qs-pulse-outline {
+        0%, 100% { outline-color: rgba(45, 212, 191, 0.2); }
+        50% { outline-color: rgba(45, 212, 191, 0.6); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const _noop_dismiss = { dismiss() {} };
+
+  function showToast(message, type = 'info', duration = 3000) {
+    // Silent by default — only show when user enables notifications
+    if (!featureNotifications) return _noop_dismiss;
+
+    injectToastStyles();
+    // Remove existing toasts
+    document.querySelectorAll('.qs-toast').forEach(t => t.remove());
+
+    const el = document.createElement('div');
+    el.className = `qs-toast qs-toast-${type}`;
+    if (type === 'loading') {
+      el.innerHTML = `<span>${message}</span><span class="qs-toast-dots"><span></span><span></span><span></span></span>`;
+    } else {
+      el.textContent = message;
+    }
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('qs-toast-visible'));
+
+    const dismiss = () => {
+      el.classList.remove('qs-toast-visible');
+      setTimeout(() => el.remove(), 200);
+    };
+
+    if (type !== 'loading' && duration > 0) {
+      setTimeout(dismiss, duration);
+    }
+
+    return { dismiss };
+  }
+
+  // ============================================================
+  // TIMEOUT WRAPPER
+  // ============================================================
+
+  function withTimeout(promise, ms, message) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(message || 'Request timed out')), ms)
+      )
+    ]);
+  }
+
+  // ============================================================
+  // DEBOUNCE STATE
+  // ============================================================
+
+  let lastDblClickTime = 0;
 
   // ============================================================
   // STATE MANAGEMENT
@@ -161,9 +289,9 @@
 
     const src = (img.src || '').toLowerCase();
     if (src.includes('spacer') || src.includes('pixel') || src.includes('blank') ||
-        src.includes('icon') || src.includes('logo') || src.includes('avatar') ||
-        src.includes('emoji') || src.includes('favicon') || src.includes('badge') ||
-        src.includes('checkmark') || src.includes('bullet') || src.includes('arrow')) return false;
+      src.includes('icon') || src.includes('logo') || src.includes('avatar') ||
+      src.includes('emoji') || src.includes('favicon') || src.includes('badge') ||
+      src.includes('checkmark') || src.includes('bullet') || src.includes('arrow')) return false;
 
     if (img.getAttribute('role') === 'presentation') return false;
     return true;
@@ -235,408 +363,242 @@
     if (rect.width === 0 && rect.height === 0) return false;
     const style = getComputedStyle(el);
     return style.display !== 'none' &&
-           style.visibility !== 'hidden' &&
-           parseFloat(style.opacity) > 0;
+      style.visibility !== 'hidden' &&
+      parseFloat(style.opacity) > 0;
   }
 
-  const QUESTION_ITEM_SELECTORS = [
-    // ProProfs
-    '.ques_marg',
-    '.question_area',
-    // Canvas LMS
-    '.question',
-    '.quiz_sortable .question_holder',
-    '.display_question',
-    // Blackboard
-    '.question-container',
-    '.vtbegenerated',
-    // Moodle
-    '.que',
-    '.formulation',
-    // Google Forms
-    '[data-params]',
-    '.freebirdFormviewerViewNumberedItemContainer',
-    // Schoology
-    '.quiz-question',
-    // D2L Brightspace
-    '.d2l-question-container',
-    '.dco_c',
-    // Quizlet
-    '.SetPageTerms-term',
-    // Kahoot
-    '.question-container',
-    // Quizizz
-    '[class*="QuestionSlide"]',
-    '[class*="questionWrapper"]',
-    // EdPuzzle
-    '.question-container',
-    // Edulastic
-    '[class*="question-content"]',
-    // IndiaBix, Sawaal, GK Today, etc.
-    '.bix-div-container',
-    '.questiondivborder',
-    '.single-question',
-    '.quiz-question-wrapper',
-    // Testbook, Gradeup
-    '[class*="questionPalette"]',
-    '[class*="test-question"]',
-    '.question-pnl',
-    // Chegg, CourseHero
-    '[class*="QuestionBody"]',
-    '[data-testid="question"]',
-    '[class*="questionContainer"]',
-    // Khan Academy
-    '.perseus-renderer',
-    '.framework-perseus',
-    // McGraw Hill Connect
-    '.question_content',
-    '.assessment-item',
-    // Cengage, Pearson
-    '[class*="exercise-item"]',
-    '[class*="questionPanel"]',
-    '[class*="QuestionPanel"]',
-    // Wiley, Mastering
-    '.prob-body',
-    '.exercise-body',
-    // Socrative, Mentimeter
-    '[class*="QuizQuestion"]',
-    '[class*="quiz_question"]',
-    // Generic LMS patterns
-    '[class*="assessment-question"]',
-    '[class*="exam-question"]',
-    '[class*="test-item"]',
-    '[class*="testItem"]',
-    // Generic patterns
-    '[class*="question-item"]',
-    '[class*="questionItem"]',
-    '[class*="quiz-item"]',
-    '[class*="question-row"]',
-    '[class*="question-block"]',
-    '[class*="questionBlock"]',
-    '[class*="question-card"]',
-    '[class*="questionCard"]',
-    '.question-wrapper',
-    '.problem-body',
-    '[data-question]',
-    '[data-question-id]',
-    '[data-qid]',
-    // Fieldset-based questions
-    'fieldset',
-  ];
+  // ============================================================
+  // PLATFORM DETECTION — Detect LMS/quiz platform from URL + DOM
+  // ============================================================
 
-  function findAllQuestionContainers() {
-    const found = [];
-    const seenElements = new Set();
+  function detectPlatform() {
+    const host = window.location.hostname.toLowerCase();
+    const path = window.location.pathname.toLowerCase();
 
-    for (const selector of QUESTION_ITEM_SELECTORS) {
-      try {
-        const elements = document.querySelectorAll(selector);
-        for (const el of elements) {
-          if (!seenElements.has(el) && isVisible(el)) {
-            seenElements.add(el);
-            found.push(el);
-          }
+    if (host.includes('instructure.com') || host.includes('.canvas.') || host.endsWith('canvas.com')) return 'canvas';
+    if (host.includes('blackboard.com') || host.includes('bblearn')) return 'blackboard';
+    if (host.includes('.moodle.') || host.endsWith('moodle.org') || host.endsWith('moodle.com') || document.querySelector('.moodle-page, #page-mod-quiz')) return 'moodle';
+    if (host.includes('google.com') && path.includes('/forms/')) return 'google_forms';
+    if (host.includes('schoology.com')) return 'schoology';
+    if (host.includes('brightspace') || host.includes('d2l.com')) return 'brightspace';
+    if (host.includes('quizlet.com')) return 'quizlet';
+    if (host.includes('kahoot')) return 'kahoot';
+    if (host.includes('quizizz.com')) return 'quizizz';
+    if (host.includes('edpuzzle.com')) return 'edpuzzle';
+    if (host.includes('edulastic.com')) return 'edulastic';
+    if (host.includes('indiabix.com')) return 'indiabix';
+    if (host.includes('sawaal.com')) return 'sawaal';
+    if (host.includes('testbook.com')) return 'testbook';
+    if (host.includes('gradeup.co') || host.includes('byjusexamprep')) return 'gradeup';
+    if (host.includes('chegg.com')) return 'chegg';
+    if (host.includes('coursehero.com')) return 'coursehero';
+    if (host.includes('khanacademy.org')) return 'khanacademy';
+    if (host.includes('connect.mheducation.com')) return 'mcgrawhill';
+    if (host.includes('cengage.com')) return 'cengage';
+    if (host.includes('pearson.com') || host.includes('mastering')) return 'pearson';
+    if (host.includes('wiley.com') || host.includes('wileyplus')) return 'wiley';
+    if (host.includes('socrative.com')) return 'socrative';
+    if (host.includes('proprofs.com')) return 'proprofs';
+    if (host.includes('coursera.org')) return 'coursera';
+    if (host.includes('udemy.com')) return 'udemy';
+    if (host.includes('edx.org')) return 'edx';
+    return 'unknown';
+  }
+
+  // ============================================================
+  // UNIVERSAL QUESTION CONTAINER DETECTION
+  // DOM-semantics-based: works on any quiz website without
+  // site-specific CSS selectors.
+  // ============================================================
+
+  const STRUCTURAL_TAGS = new Set(['body', 'html', 'header', 'footer', 'nav', 'aside', 'main']);
+
+  function hasFormInputsOrOptions(el) {
+    if (el.querySelector('input[type="radio"], input[type="checkbox"], select, textarea')) return true;
+    if (el.querySelector('[role="radio"], [role="checkbox"], [role="option"], [role="radiogroup"]')) return true;
+    if (hasDivBasedOptionGroup(el)) return true;
+    return false;
+  }
+
+  function hasDivBasedOptionGroup(container) {
+    // Quick check for list-based or data-attribute options
+    const candidates = container.querySelectorAll('ul > li, ol > li, [data-answer], [data-option], [data-testid*="answer"], [data-testid*="option"]');
+    if (candidates.length >= 2 && candidates.length <= 10) return true;
+    // Check for same-tag sibling groups that look like options
+    for (const parent of container.querySelectorAll('div, ul, ol, section')) {
+      const children = Array.from(parent.children).filter(c => {
+        const text = c.textContent.trim();
+        return text.length > 0 && text.length < 300 && isVisible(c);
+      });
+      if (children.length >= 2 && children.length <= 10) {
+        const tags = children.map(c => c.tagName);
+        if (tags.every(t => t === tags[0])) {
+          const avgLen = children.reduce((sum, c) => sum + c.textContent.trim().length, 0) / children.length;
+          if (avgLen < 300) return true;
         }
-      } catch (_) {}
+      }
     }
+    return false;
+  }
 
-    return found;
+  function containsMultipleQuestionGroups(el) {
+    // Count distinct radio groups by name
+    const radios = el.querySelectorAll('input[type="radio"]');
+    if (radios.length > 0) {
+      const names = new Set();
+      radios.forEach(r => { if (r.name) names.add(r.name); });
+      if (names.size > 1) return true;
+    }
+    if (el.querySelectorAll('fieldset').length > 1) return true;
+    if (el.querySelectorAll('[role="radiogroup"]').length > 1) return true;
+    return false;
+  }
+
+  function findNarrowestInputContainer(broad, target) {
+    // Try fieldset / radiogroup / group that contains the click target
+    const candidates = broad.querySelectorAll('fieldset, [role="radiogroup"], [role="group"]');
+    for (const c of candidates) {
+      if (c.contains(target) && hasFormInputsOrOptions(c)) return c;
+    }
+    // Walk up from target to find narrowest ancestor with inputs
+    let current = target;
+    let depth = 0;
+    while (current && current !== broad && depth < 10) {
+      if (hasFormInputsOrOptions(current)) {
+        const textLen = current.textContent.trim().length;
+        if (textLen >= 20 && textLen <= 8000) return current;
+      }
+      current = current.parentElement;
+      depth++;
+    }
+    return broad;
   }
 
   function findQuestionContainer(clickTarget) {
-    // ------ Strategy 1: Known platform selectors (most reliable) ------
-    for (const selector of QUESTION_ITEM_SELECTORS) {
-      try {
-        const match = clickTarget.closest(selector);
-        if (match && isVisible(match)) {
-          devLog('Container found via selector:', selector);
-          return match;
-        }
-      } catch (_) {}
-    }
-
-    // ------ Strategy 2: Score ancestors (generic detection) ------
+    // Phase 1: Walk up from click target — find smallest ancestor with inputs + text
     let current = clickTarget;
-    let bestContainer = null;
-    let maxScore = -Infinity;
     let depth = 0;
-
     while (current && current !== document.body && depth < 20) {
-      const score = scoreContainer(current);
-      if (score > maxScore) {
-        maxScore = score;
-        bestContainer = current;
+      const tag = current.tagName.toLowerCase();
+      if (STRUCTURAL_TAGS.has(tag)) {
+        current = current.parentElement;
+        depth++;
+        continue;
       }
-      if (score >= 8) {
-        devLog('Container found via scoring:', score, current.tagName, current.className?.toString()?.substring(0, 40));
-        return bestContainer;
-      }
-      current = current.parentElement;
-      depth++;
-    }
-
-    if (bestContainer && maxScore >= 3) {
-      devLog('Container found via best score:', maxScore);
-      return bestContainer;
-    }
-
-    // ------ Strategy 3: Find nearest VISIBLE question on the page ------
-    const allContainers = findAllQuestionContainers();
-    if (allContainers.length > 0) {
-      for (const c of allContainers) {
-        if (c.contains(clickTarget)) {
-          devLog('Container found via page-scan contains');
-          return c;
-        }
-      }
-      const clickRect = clickTarget.getBoundingClientRect();
-      const clickY = clickRect.top + clickRect.height / 2;
-      let closestDist = Infinity;
-      let closestContainer = null;
-
-      for (const c of allContainers) {
-        const rect = c.getBoundingClientRect();
-        const centerY = rect.top + rect.height / 2;
-        const dist = Math.abs(centerY - clickY);
-        if (dist < closestDist) {
-          closestDist = dist;
-          closestContainer = c;
-        }
-      }
-
-      if (closestContainer) {
-        devLog('Container found via nearest visible question, dist:', Math.round(closestDist));
-        return closestContainer;
-      }
-    }
-
-    // ------ Strategy 4: Last resort — reasonable ancestor ------
-    devLog('Container found via last-resort ancestor walk');
-    return findReasonableAncestor(clickTarget);
-  }
-
-  function scoreContainer(element) {
-    let score = 0;
-    const tag = element.tagName.toLowerCase();
-    const cls = (element.className || '').toString().toLowerCase();
-    const id = (element.id || '').toLowerCase();
-    const role = (element.getAttribute('role') || '').toLowerCase();
-
-    const radios = element.querySelectorAll('input[type="radio"]');
-    const checkboxes = element.querySelectorAll('input[type="checkbox"]');
-    const selects = element.querySelectorAll('select');
-    const textInputs = element.querySelectorAll('input[type="text"], input:not([type]):not([role="combobox"]), textarea');
-    const totalInputs = radios.length + checkboxes.length + selects.length + textInputs.length;
-
-    const divOptions = element.querySelectorAll(
-      '.opt_text, .questonnopt, [role="radio"], [role="checkbox"], [role="option"], ' +
-      '.answers-list > li, [class*="answer-option"], [class*="choice-item"], [class*="option-text"]'
-    );
-
-    if (totalInputs > 0) score += 3;
-    if (divOptions.length >= 2) score += 3;
-    if (radios.length >= 2) score += 3;
-    if (checkboxes.length >= 2) score += 2;
-
-    // Strong signal: radio buttons within a named group
-    if (radios.length >= 2) {
-      const names = new Set();
-      radios.forEach(r => names.add(r.name));
-      if (names.size === 1) score += 2; // single radio group = likely one question
-    }
-
-    const namePattern = /question|quiz|problem|item|prompt|assessment|mcq|answer-group|response|ques_marg|bix-div|questiondivborder/;
-    if (namePattern.test(cls)) score += 5;
-    if (namePattern.test(id)) score += 4;
-
-    // Data attributes that indicate question containers
-    if (element.dataset.question || element.dataset.questionId || element.dataset.qid ||
-        element.dataset.testid?.includes('question')) score += 5;
-
-    if (role === 'radiogroup' || role === 'group') score += 4;
-    if (tag === 'fieldset') score += 3;
-
-    // Has both question text AND answer options (strong signal)
-    const hasTextEl = element.querySelector('p, span, label, h1, h2, h3, h4, h5, h6, legend, .question-text, .question_text, .qtext');
-    if (hasTextEl && (totalInputs > 0 || divOptions.length >= 2)) score += 3;
-
-    // Contains a numbered question pattern (e.g., "Q1.", "1.", "Question 1")
-    const firstText = element.textContent.trim().substring(0, 100);
-    if (/^(?:Q\.?\s*\d+|Question\s+\d+|\d+[\.\)]\s)/i.test(firstText)) score += 2;
-
-    // Contains images (possible image-based question)
-    const images = element.querySelectorAll('img');
-    const significantImages = Array.from(images).filter(isSignificantImage);
-    if (significantImages.length > 0 && (totalInputs > 0 || divOptions.length >= 2)) score += 2;
-
-    // Contains table with radio buttons (IndiaBix-style layout)
-    const tableWithRadios = element.querySelector('table input[type="radio"]');
-    if (tableWithRadios) score += 3;
-
-    const textLen = element.textContent.trim().length;
-    if (textLen >= 20 && textLen <= 3000) score += 1;
-    if (textLen >= 50 && textLen <= 2000) score += 1; // sweet spot for single question
-    if (textLen > 8000) score -= 5;
-    if (textLen < 10) score -= 5;
-
-    if (['body', 'html', 'main', 'header', 'footer', 'nav', 'aside'].includes(tag)) score -= 10;
-
-    // Structural penalties for containers that are too broad
-    const childQuestions = element.querySelectorAll(
-      '.ques_marg, .question, .que, [class*="question-item"], [class*="quiz-item"], ' +
-      '.bix-div-container, .single-question, [data-question-id]'
-    );
-    if (childQuestions.length > 1) score -= 5;
-
-    // Penalty for containing navigation/sidebar elements
-    if (element.querySelector('nav, [role="navigation"], .sidebar, .pagination')) score -= 3;
-
-    return score;
-  }
-
-  function findReasonableAncestor(element) {
-    let current = element;
-    let depth = 0;
-    while (current && current !== document.body && depth < 15) {
-      const inputs = current.querySelectorAll('input, select, textarea');
-      const divOptions = current.querySelectorAll(
-        '.opt_text, [role="radio"], [role="option"], .answers-list > li, ' +
-        '[class*="answer-option"], [class*="choice-item"], button[class*="option"]'
-      );
       const textLen = current.textContent.trim().length;
-      if ((inputs.length > 0 || divOptions.length >= 2) && textLen > 20 && textLen < 5000) {
+      if (textLen >= 20 && textLen <= 8000 && hasFormInputsOrOptions(current)) {
+        if (containsMultipleQuestionGroups(current)) {
+          const narrow = findNarrowestInputContainer(current, clickTarget);
+          if (narrow !== current) {
+            devLog('Container found via narrowing:', narrow.tagName, narrow.className?.toString()?.substring(0, 40));
+            return narrow;
+          }
+        }
+        devLog('Container found via ancestor walk (phase 1):', current.tagName,
+          current.className?.toString()?.substring(0, 40), 'textLen:', textLen);
         return current;
       }
-      // Check for table-based questions (IndiaBix pattern)
-      if (current.tagName === 'TABLE' || current.querySelector('table input[type="radio"]')) {
-        if (textLen > 20 && textLen < 5000) return current;
+      current = current.parentElement;
+      depth++;
+    }
+
+    // Phase 2: No inputs found — find nearest block ancestor with reasonable text
+    current = clickTarget;
+    depth = 0;
+    while (current && current !== document.body && depth < 15) {
+      const tag = current.tagName.toLowerCase();
+      if (STRUCTURAL_TAGS.has(tag)) {
+        current = current.parentElement;
+        depth++;
+        continue;
+      }
+      const textLen = current.textContent.trim().length;
+      if (textLen >= 20 && textLen <= 5000) {
+        const display = getComputedStyle(current).display;
+        if (['block', 'flex', 'grid', 'table', 'list-item', 'table-row'].includes(display) ||
+          ['div', 'section', 'article', 'td', 'tr', 'table', 'li', 'p', 'fieldset', 'form'].includes(tag)) {
+          devLog('Container found via text ancestor (phase 2):', current.tagName, 'textLen:', textLen);
+          return current;
+        }
       }
       current = current.parentElement;
       depth++;
     }
-    current = element;
+
+    // Phase 3: Last resort — walk up 5 levels
+    current = clickTarget;
     for (let i = 0; i < 5 && current && current !== document.body; i++) {
       current = current.parentElement;
     }
-    return current || element;
+    devLog('Container found via last-resort walk (phase 3):', current?.tagName);
+    return current || clickTarget;
   }
 
   // ============================================================
   // QUESTION TEXT + OPTIONS EXTRACTION
   // ============================================================
 
-  function findLabelForInput(input) {
-    if (input.id) {
-      const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
-      if (label) return label.textContent.trim();
-    }
-    const parentLabel = input.closest('label');
-    if (parentLabel) {
-      const clone = parentLabel.cloneNode(true);
-      clone.querySelectorAll('input, select, textarea, button').forEach(el => el.remove());
-      const text = clone.textContent.trim();
-      if (text) return text;
-    }
-    const parent = input.parentElement;
-    if (parent) {
-      const clone = parent.cloneNode(true);
-      clone.querySelectorAll('input, select, textarea, button').forEach(el => el.remove());
-      const text = clone.textContent.trim();
-      if (text && text.length < 500) return text;
-    }
-    if (input.getAttribute('aria-label')) return input.getAttribute('aria-label');
-    const labelledBy = input.getAttribute('aria-labelledby');
-    if (labelledBy) {
-      const labelEl = document.getElementById(labelledBy);
-      if (labelEl) return labelEl.textContent.trim();
-    }
-    let sibling = input.nextSibling;
-    while (sibling) {
-      if (sibling.nodeType === Node.TEXT_NODE && sibling.textContent.trim()) {
-        return sibling.textContent.trim();
-      }
-      if (sibling.nodeType === Node.ELEMENT_NODE && !sibling.querySelector('input')) {
-        const text = sibling.textContent.trim();
-        if (text && text.length < 500) return text;
-      }
-      sibling = sibling.nextSibling;
-    }
-    return null;
-  }
-
   // ============================================================
-  // UNIVERSAL OPTION TEXT EXTRACTION
-  // Adaptive approach that works across any page layout.
-  // Caches the strategy that worked for this page so subsequent
-  // questions use the fastest path.
+  // UNIVERSAL OPTION LABEL EXTRACTION
+  // Single merged function replacing findLabelForInput,
+  // findOptionText, and _tryOptionStrategy.
   // ============================================================
-
-  let _optionTextStrategy = null;
 
   function extractTextFromElement(el) {
     if (!el) return '';
     const clone = el.cloneNode(true);
     clone.querySelectorAll('input, select, textarea, button, script, style').forEach(n => n.remove());
-    return clone.textContent.replace(/\s+/g, ' ').trim();
+    convertMathNotation(clone);
+    return walkTextNodes(clone);
   }
 
   function stripOptionIdentifier(text) {
     if (!text) return '';
-    return text.replace(/^\s*[\(\[]?\s*[A-Da-d1-9]\s*[\)\]\.:\-]?\s*/, '').trim();
+    // Strip leading identifiers like "A.", "B)", "1.", "2)" etc.
+    // Require a delimiter after the letter/digit to avoid stripping fractions like "1/4" or "2/3"
+    return text.replace(/^\s*[\(\[]?\s*[A-Da-d1-9]\s*[\)\]\.:\-]\s*/, '').trim();
   }
 
-  function findOptionText(input) {
-    // If we already know what works for this page, try it first
-    if (_optionTextStrategy) {
-      const result = _tryOptionStrategy(input, _optionTextStrategy);
-      if (result) return result;
-    }
-
-    const strategies = [
-      'label-for', 'label-wrap', 'table-row', 'sibling-walk',
-      'parent-climb', 'aria', 'adjacent-text'
-    ];
-
-    for (const strategy of strategies) {
-      const result = _tryOptionStrategy(input, strategy);
-      if (result) {
-        _optionTextStrategy = strategy;
-        devLog('Option text strategy cached:', strategy, '→', result.substring(0, 40));
-        return result;
+  function getOptionLabel(input) {
+    // 1. <label for="id"> association
+    if (input.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+      if (label) {
+        const text = extractTextFromElement(label);
+        if (text) return stripOptionIdentifier(text);
       }
     }
 
-    return null;
-  }
+    // 2. Wrapping <label> element
+    const parentLabel = input.closest('label');
+    if (parentLabel) {
+      const text = extractTextFromElement(parentLabel);
+      if (text) return stripOptionIdentifier(text);
+    }
 
-  function _tryOptionStrategy(input, strategy) {
-    switch (strategy) {
-      case 'label-for': {
-        if (!input.id) return null;
-        const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
-        if (!label) return null;
-        const text = extractTextFromElement(label);
-        return stripOptionIdentifier(text) || null;
+    // 3. ARIA attributes
+    if (input.getAttribute('aria-label')) {
+      return stripOptionIdentifier(input.getAttribute('aria-label'));
+    }
+    const labelledBy = input.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const el = document.getElementById(labelledBy);
+      if (el) {
+        const text = el.textContent.trim();
+        if (text) return stripOptionIdentifier(text);
       }
+    }
 
-      case 'label-wrap': {
-        const label = input.closest('label');
-        if (!label) return null;
-        const text = extractTextFromElement(label);
-        return stripOptionIdentifier(text) || null;
-      }
-
-      case 'table-row': {
-        const td = input.closest('td, th');
-        if (!td) return null;
-        const tr = td.closest('tr');
-        if (!tr) return null;
+    // 4. Table row — other cells' text (handles IndiaBix-style layouts)
+    const td = input.closest('td, th');
+    if (td) {
+      const tr = td.closest('tr');
+      if (tr) {
         const cells = tr.querySelectorAll('td, th');
         const textParts = [];
         for (const cell of cells) {
           if (cell.contains(input)) continue;
           const cellText = cell.textContent.trim();
-          // Skip cells that are just single-letter identifiers (A, B, 1, etc.)
           if (cellText && !(/^[A-Da-d1-9]\s*[\.\)\]:\-]?$/.test(cellText))) {
             textParts.push(cellText);
           }
@@ -644,181 +606,271 @@
         if (textParts.length > 0) {
           return textParts.join(' ').replace(/\s+/g, ' ').trim() || null;
         }
-        return null;
       }
-
-      case 'sibling-walk': {
-        const parent = input.parentElement;
-        if (!parent || parent.matches('td, th')) return null;
-        const textParts = [];
-        for (const sib of parent.children) {
-          if (sib === input || sib.contains(input) || sib.querySelector('input, select, textarea')) continue;
-          const text = sib.textContent.trim();
-          if (text && !(/^[A-Da-d1-9]\s*[\.\)\]:\-]?$/.test(text))) {
-            textParts.push(text);
-          }
-        }
-        if (textParts.length > 0) {
-          return textParts.join(' ').replace(/\s+/g, ' ').trim() || null;
-        }
-        return null;
-      }
-
-      case 'parent-climb': {
-        let current = input.parentElement;
-        let depth = 0;
-        while (current && depth < 6 && current !== document.body) {
-          const sameTypeInputs = current.querySelectorAll(`input[type="${input.type}"]`);
-          const sameNameInputs = input.name
-            ? current.querySelectorAll(`input[name="${CSS.escape(input.name)}"]`)
-            : sameTypeInputs;
-
-          if (sameNameInputs.length <= 1 || sameTypeInputs.length <= 1) {
-            const text = extractTextFromElement(current);
-            const stripped = stripOptionIdentifier(text);
-            if (stripped && stripped.length > 0 && stripped.length < 500) {
-              return stripped;
-            }
-          }
-          current = current.parentElement;
-          depth++;
-        }
-        return null;
-      }
-
-      case 'aria': {
-        if (input.getAttribute('aria-label')) {
-          return stripOptionIdentifier(input.getAttribute('aria-label')) || null;
-        }
-        const labelledBy = input.getAttribute('aria-labelledby');
-        if (labelledBy) {
-          const el = document.getElementById(labelledBy);
-          if (el) return stripOptionIdentifier(el.textContent.trim()) || null;
-        }
-        return null;
-      }
-
-      case 'adjacent-text': {
-        let sibling = input.nextSibling;
-        while (sibling) {
-          if (sibling.nodeType === Node.TEXT_NODE) {
-            const text = sibling.textContent.trim();
-            if (text.length > 0) return stripOptionIdentifier(text) || null;
-          }
-          if (sibling.nodeType === Node.ELEMENT_NODE && !sibling.querySelector('input')) {
-            const text = sibling.textContent.trim();
-            if (text && text.length < 500) return stripOptionIdentifier(text) || null;
-          }
-          sibling = sibling.nextSibling;
-        }
-        return null;
-      }
-
-      default:
-        return null;
     }
+
+    // 5. Adjacent sibling text/elements
+    let sibling = input.nextSibling;
+    while (sibling) {
+      if (sibling.nodeType === Node.TEXT_NODE) {
+        const text = sibling.textContent.trim();
+        if (text.length > 0) return stripOptionIdentifier(text);
+      }
+      if (sibling.nodeType === Node.ELEMENT_NODE && !sibling.querySelector('input, select, textarea')) {
+        const text = sibling.textContent.trim();
+        if (text && text.length < 500) return stripOptionIdentifier(text);
+      }
+      sibling = sibling.nextSibling;
+    }
+
+    // Also check previous siblings
+    sibling = input.previousSibling;
+    while (sibling) {
+      if (sibling.nodeType === Node.TEXT_NODE) {
+        const text = sibling.textContent.trim();
+        if (text.length > 0 && !(/^[A-Da-d1-9]\s*[\.\)\]:\-]?$/.test(text))) {
+          return stripOptionIdentifier(text);
+        }
+      }
+      if (sibling.nodeType === Node.ELEMENT_NODE && !sibling.querySelector('input, select, textarea')) {
+        const text = sibling.textContent.trim();
+        if (text && text.length < 500 && !(/^[A-Da-d1-9]\s*[\.\)\]:\-]?$/.test(text))) {
+          return stripOptionIdentifier(text);
+        }
+      }
+      sibling = sibling.previousSibling;
+    }
+
+    // 6. Parent text minus input text (climb up to 4 levels)
+    let current = input.parentElement;
+    let depth = 0;
+    while (current && depth < 4 && current !== document.body) {
+      const sameTypeInputs = current.querySelectorAll(`input[type="${input.type}"]`);
+      const sameNameInputs = input.name
+        ? current.querySelectorAll(`input[name="${CSS.escape(input.name)}"]`)
+        : sameTypeInputs;
+      if (sameNameInputs.length <= 1 || sameTypeInputs.length <= 1) {
+        const text = extractTextFromElement(current);
+        const stripped = stripOptionIdentifier(text);
+        if (stripped && stripped.length > 0 && stripped.length < 500) {
+          return stripped;
+        }
+      }
+      current = current.parentElement;
+      depth++;
+    }
+
+    return null;
   }
 
-  function extractQuestionText(container) {
-    // ---- Strategy 1: Known question-text selectors ----
-    const questionSelectors = [
-      '.question-text', '.question_text', '.questionText',
-      '.question-title', '.question_title',
-      '.prompt', '.stem', '.question-stem',
-      '.quiz-question-text', '.assessment-question',
-      'legend', '.display_question > .question_text',
-      '[class*="questionBody"]', '[class*="question-body"]',
-      '.text > .user_content', '.question_description',
-      '.qtext', '.formulation .qtext',
-      '[class*="question-content"]', '[class*="questionContent"]',
-      '.question-header', '[class*="questionText"]',
-      // IndiaBix / competitive exam sites
-      '.bix-td-qtxt', '.question-row-text',
-      // Additional LMS
-      '.perseus-renderer .paragraph',
-      '.prob-stem', '.exercise-stem',
-      '[class*="QuestionStem"]', '[class*="questionStem"]',
-    ];
-
-    for (const sel of questionSelectors) {
-      const el = container.querySelector(sel);
-      if (el && el.textContent.trim().length > 5) {
-        return el.textContent.trim();
-      }
-    }
-
-    // ---- Strategy 2: Find text BEFORE the answer section ----
-    // Collect all answer-area markers (inputs, option lists, etc.)
-    const answerMarkers = container.querySelectorAll(
-      '.answers-list, .answer_list, [class*="answer-option"], [class*="choice-item"], ' +
-      'input[type="radio"], input[type="checkbox"], ' +
-      '[role="radio"], [role="checkbox"], .opt_text, ' +
-      '[class*="answerOption"], [class*="choiceItem"]'
-    );
-
-    if (answerMarkers.length > 0) {
-      // Find the topmost answer marker by DOM order
-      const firstMarker = answerMarkers[0];
-      const firstMarkerParent = firstMarker.closest('ul, ol, table, .answers-list, .answer_list, ' +
-        '[class*="option"], [class*="answer"], [class*="choice"], [role="radiogroup"]')
-        || firstMarker.parentElement;
-
-      // Walk text nodes before the answer area
-      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-      let parts = [];
-      while (walker.nextNode()) {
-        const node = walker.currentNode;
-        // Stop if we've reached the answer section
-        if (firstMarkerParent.contains(node)) break;
-        // Also stop at the first marker itself
-        if (firstMarker.contains(node)) break;
-        const text = node.textContent.trim();
-        if (text.length > 2) parts.push(text);
-      }
-      if (parts.length > 0) {
-        const questionText = parts.join(' ').trim();
-        if (questionText.length > 5) return questionText;
-      }
-    }
-
-    // ---- Strategy 3: Walk elements before any input ----
+  function findFirstAnswerElement(container) {
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT);
-    let questionParts = [];
-    let foundInput = false;
-
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const tag = node.tagName.toLowerCase();
-      if (['input', 'select', 'textarea'].includes(tag) ||
-          node.getAttribute('role') === 'radio' || node.getAttribute('role') === 'checkbox') {
-        foundInput = true; continue;
-      }
-      if (!foundInput && ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'legend', 'label', 'td', 'th', 'strong', 'em', 'b', 'i'].includes(tag)) {
-        const directText = getDirectText(node);
-        if (directText.length > 3) questionParts.push(directText);
-      }
+      if (['input', 'select', 'textarea'].includes(tag)) return node;
+      const role = node.getAttribute('role');
+      if (role === 'radio' || role === 'checkbox' || role === 'option' || role === 'radiogroup') return node;
+      if (node.hasAttribute('data-answer') || node.hasAttribute('data-option')) return node;
     }
-    if (questionParts.length > 0) return questionParts.join(' ').trim();
-
-    // ---- Strategy 4: Clone container, strip answer elements, take remaining text ----
-    const clone = container.cloneNode(true);
-    clone.querySelectorAll(
-      'label, [class*="answer"], [class*="option"], [class*="choice"], ' +
-      'input, select, textarea, [role="radio"], [role="checkbox"], .opt_text'
-    ).forEach(el => el.remove());
-    const remaining = clone.textContent.trim();
-    if (remaining.length > 5) return remaining;
-
-    // ---- Strategy 5: Fallback — truncated container text ----
-    return container.textContent.trim().substring(0, 2000);
+    return null;
   }
 
-  function getDirectText(element) {
-    let text = '';
-    for (const child of element.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE) text += child.textContent;
+  /**
+   * Convert math notation in a cloned DOM node (mutates in place).
+   * Handles fractions (<sup>3</sup><sub>4</sub> → (3/4)),
+   * exponents (10<sup>0.48</sup> → 10^(0.48)), subscripts (H<sub>2</sub> → H_(2)),
+   * MathML (<mfrac>), and CSS fraction containers.
+   */
+  function convertMathNotation(clone) {
+    // 1. MathML fractions: <mfrac><mn>3</mn><mn>4</mn></mfrac> → (3/4)
+    clone.querySelectorAll('mfrac').forEach(mf => {
+      if (mf.children.length >= 2) {
+        const num = mf.children[0].textContent.trim();
+        const den = mf.children[1].textContent.trim();
+        if (num && den) { mf.replaceWith('(' + num + '/' + den + ')'); return; }
+      }
+    });
+
+    // 2. CSS fraction containers: .frac, .fraction, etc.
+    clone.querySelectorAll('[class*="frac" i]').forEach(frac => {
+      const children = Array.from(frac.children);
+      if (children.length >= 2) {
+        const num = children[0].textContent.trim();
+        const den = children[children.length - 1].textContent.trim();
+        if (num && den && num.length < 20 && den.length < 20) {
+          frac.replaceWith('(' + num + '/' + den + ')');
+          return;
+        }
+      }
+    });
+
+    // 3. Handle <sup>/<sub> — detect fraction vs exponent
+    const sups = Array.from(clone.querySelectorAll('sup'));
+    for (const sup of sups) {
+      if (!sup.parentNode) continue; // already removed
+      const content = sup.textContent.trim();
+      if (!content) { sup.remove(); continue; }
+
+      let isFraction = false;
+      let subEl = null;
+      let slashNodes = [];
+
+      // Check if sup is followed by [optional / or ⁄] then <sub> — inline fraction
+      let next = sup.nextSibling;
+      while (next) {
+        if (next.nodeType === Node.TEXT_NODE) {
+          const t = next.textContent.trim();
+          if (t === '/' || t === '\u2044' || t === '\u2215' || t === '') {
+            if (t) slashNodes.push(next);
+            next = next.nextSibling;
+            continue;
+          }
+          break;
+        }
+        if (next.nodeType === Node.ELEMENT_NODE && next.tagName === 'SUB') {
+          isFraction = true;
+          subEl = next;
+        }
+        break;
+      }
+
+      // Also check: sup + sub as children of a small container (stacked fraction)
+      if (!isFraction && sup.parentElement) {
+        const parent = sup.parentElement;
+        const directSub = parent.querySelector(':scope > sub');
+        if (directSub && parent.children.length <= 4) {
+          isFraction = true;
+          subEl = directSub;
+        }
+      }
+
+      if (isFraction && subEl) {
+        const den = subEl.textContent.trim();
+        slashNodes.forEach(n => n.remove());
+        subEl.remove();
+        sup.replaceWith('(' + content + '/' + den + ')');
+      } else {
+        // Not a fraction → exponent: 10<sup>0.48</sup> → 10^(0.48)
+        sup.replaceWith('^(' + content + ')');
+      }
     }
-    return text.trim();
+
+    // 4. Remaining <sub> elements (standalone subscripts, not part of fractions)
+    clone.querySelectorAll('sub').forEach(sub => {
+      const content = sub.textContent.trim();
+      if (content) sub.replaceWith('_(' + content + ')');
+      else sub.remove();
+    });
+  }
+
+  /**
+   * Walk a DOM node's text nodes and join with spaces.
+   * Unlike textContent, this prevents adjacent elements from merging.
+   */
+  function walkTextNodes(node) {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const parts = [];
+    while (walker.nextNode()) {
+      const t = walker.currentNode.textContent.trim();
+      if (t) parts.push(t);
+    }
+    return parts.join(' ')
+      .replace(/\s+/g, ' ')
+      .replace(/ \^/g, '^')      // no space before ^ (10 ^(0.48) → 10^(0.48))
+      .replace(/ _\(/g, '_(')    // no space before _( (H _(2) → H_(2))
+      .trim();
+  }
+
+  /**
+   * Walk a DOM node's text nodes with math-aware extraction.
+   * Converts fractions, exponents, subscripts before walking.
+   */
+  function getSpacedText(node) {
+    const clone = node.cloneNode(true);
+    convertMathNotation(clone);
+    return walkTextNodes(clone);
+  }
+
+  /**
+   * Strip leading question number prefix: "1.", "2)", "Q3:", "Question 1." etc.
+   * Only strips if followed by a clear delimiter to avoid mangling numbers like "1.5 liters"
+   */
+  function stripQuestionNumber(text) {
+    if (!text) return '';
+    return text
+      .replace(/^\s*(?:Q(?:uestion)?\.?\s*)?\d{1,4}\s*[\)\:]\s*/i, '')  // 1) or Q1: or Question 2:
+      .replace(/^\s*(?:Q(?:uestion)?\.?\s*)?\d{1,4}\.\s+/i, '')          // 1. (dot + space, not 1.5)
+      .trim();
+  }
+
+  function cleanContainerHTML(container) {
+    const clone = container.cloneNode(true);
+
+    // Remove non-content elements
+    clone.querySelectorAll('script, style, noscript, iframe, link, meta').forEach(n => n.remove());
+
+    // Remove img src attributes (images sent separately as base64)
+    clone.querySelectorAll('img').forEach(img => {
+      img.removeAttribute('src');
+      img.removeAttribute('srcset');
+      img.removeAttribute('loading');
+    });
+
+    // Strip noise attributes but keep semantic ones
+    const keepAttrs = new Set([
+      'type', 'name', 'value', 'role', 'for', 'id',
+      'aria-label', 'aria-labelledby', 'aria-checked', 'aria-selected',
+      'checked', 'selected', 'disabled', 'placeholder', 'href'
+    ]);
+    clone.querySelectorAll('*').forEach(el => {
+      for (const attr of [...el.attributes]) {
+        if (!keepAttrs.has(attr.name)) el.removeAttribute(attr.name);
+      }
+    });
+
+    // Collapse whitespace and return
+    let html = clone.innerHTML.replace(/\s+/g, ' ').trim();
+
+    // Truncate if too large (safety valve — most questions are < 5KB)
+    if (html.length > 15000) {
+      html = html.substring(0, 15000) + '<!-- truncated -->';
+    }
+
+    return html;
+  }
+
+  function extractQuestionText(container) {
+    // Strategy 1: Range API — extract all text from container start to first answer element
+    // Walk text nodes with spaces to prevent element-boundary merging (e.g. "1.217")
+    const firstAnswer = findFirstAnswerElement(container);
+    if (firstAnswer) {
+      try {
+        const range = document.createRange();
+        range.setStart(container, 0);
+        range.setEndBefore(firstAnswer);
+        const fragment = range.cloneContents();
+        const text = stripQuestionNumber(getSpacedText(fragment));
+        range.detach();
+        if (text.length > 5) return text;
+      } catch (e) {
+        devWarn('Range extraction failed:', e.message);
+      }
+    }
+
+    // Strategy 2: Clone container, remove answer-related elements, take remaining text
+    // Keep labels (they often contain question text) — only remove input controls
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll(
+      'input, select, textarea, button, ' +
+      '[role="radio"], [role="checkbox"], [role="option"], ' +
+      '[data-answer], [data-option]'
+    ).forEach(el => el.remove());
+    const remaining = stripQuestionNumber(getSpacedText(clone));
+    if (remaining.length > 5) return remaining;
+
+    // Strategy 3: Full container text — no hard truncation
+    return stripQuestionNumber(getSpacedText(container));
   }
 
   function isTrueFalse(options) {
@@ -963,6 +1015,104 @@
     return '';
   }
 
+  function findDivBasedOptions(container) {
+    // Check ul/ol > li items
+    const lists = container.querySelectorAll('ul, ol');
+    for (const list of lists) {
+      const items = Array.from(list.querySelectorAll(':scope > li')).filter(li => isVisible(li));
+      if (items.length >= 2 && items.length <= 10) {
+        const nonEmpty = items.filter(item => {
+          const t = item.textContent.trim();
+          return t.length > 0 && t.length < 500;
+        });
+        if (nonEmpty.length >= 2) {
+          const avgLen = nonEmpty.reduce((sum, item) => sum + item.textContent.trim().length, 0) / nonEmpty.length;
+          if (avgLen < 300) {
+            const options = [];
+            items.forEach((item, index) => {
+              const text = item.textContent.trim();
+              if (text.length > 0 && text.length < 500) {
+                options.push({
+                  element: item, inputElement: item,
+                  text: stripOptionIdentifier(text) || text,
+                  value: text,
+                  identifier: String.fromCharCode(65 + index),
+                  isCustom: true
+                });
+              }
+            });
+            if (options.length >= 2) {
+              devLog('Div options found via list items:', options.length);
+              return options;
+            }
+          }
+        }
+      }
+    }
+
+    // Check data-answer/data-option/data-testid elements
+    const dataOptions = container.querySelectorAll('[data-answer], [data-option], [data-testid*="answer"], [data-testid*="option"]');
+    if (dataOptions.length >= 2 && dataOptions.length <= 10) {
+      const options = [];
+      dataOptions.forEach((opt, index) => {
+        const text = opt.textContent.trim();
+        if (text) {
+          options.push({
+            element: opt, inputElement: opt,
+            text: stripOptionIdentifier(text) || text,
+            value: opt.getAttribute('data-value') || text,
+            identifier: String.fromCharCode(65 + index),
+            isCustom: true
+          });
+        }
+      });
+      if (options.length >= 2) {
+        devLog('Div options found via data attributes:', options.length);
+        return options;
+      }
+    }
+
+    // Find groups of same-tag siblings with short text
+    const wrappers = [container, ...container.querySelectorAll('div, section, fieldset, form')];
+    for (const parent of wrappers) {
+      const children = Array.from(parent.children).filter(c => {
+        if (!isVisible(c)) return false;
+        const text = c.textContent.trim();
+        return text.length > 0 && text.length < 300;
+      });
+      if (children.length >= 2 && children.length <= 10) {
+        const tags = children.map(c => c.tagName);
+        const sameTag = tags.every(t => t === tags[0]);
+        if (sameTag) {
+          const avgLen = children.reduce((sum, c) => sum + c.textContent.trim().length, 0) / children.length;
+          if (avgLen < 300) {
+            // Skip if it looks like navigation
+            const looksLikeNav = children.every(c => c.querySelector('a') && c.textContent.trim().length < 20);
+            if (!looksLikeNav) {
+              const options = [];
+              children.forEach((child, index) => {
+                const text = child.textContent.trim();
+                options.push({
+                  element: child, inputElement: child,
+                  text: stripOptionIdentifier(text) || text,
+                  value: text,
+                  identifier: String.fromCharCode(65 + index),
+                  isCustom: true
+                });
+              });
+              if (options.length >= 2) {
+                devLog('Div options found via same-tag siblings:', options.length, 'tag:', tags[0]);
+                return options;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
   function extractOptionsAndType(container) {
     // ---- Strategy 1: Standard radio buttons ----
     const radios = container.querySelectorAll('input[type="radio"]');
@@ -976,7 +1126,7 @@
       });
       const largestGroup = Object.values(nameGroups).sort((a, b) => b.length - a.length)[0];
       largestGroup.forEach((radio, index) => {
-        const label = findOptionText(radio) || findLabelForInput(radio);
+        const label = getOptionLabel(radio);
         const optionContainer = radio.closest('label, li, div.answer, [class*="option"], [class*="answer"], [class*="choice"]')
           || radio.closest('tr')
           || radio.parentElement;
@@ -989,7 +1139,7 @@
         });
       });
       devLog('Options found via radio buttons:', options.length,
-             'texts:', options.map(o => o.text.substring(0, 20)));
+        'texts:', options.map(o => o.text.substring(0, 20)));
       return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
     }
 
@@ -998,7 +1148,7 @@
     if (checkboxes.length >= 2) {
       const options = [];
       checkboxes.forEach((cb, index) => {
-        const label = findOptionText(cb) || findLabelForInput(cb);
+        const label = getOptionLabel(cb);
         const optionContainer = cb.closest('label, li, div.answer, [class*="option"], [class*="answer"], [class*="choice"]')
           || cb.closest('tr')
           || cb.parentElement;
@@ -1019,7 +1169,7 @@
     if (selects.length >= 2) {
       const matchItems = [];
       selects.forEach((select, index) => {
-        const label = findLabelForInput(select);
+        const label = getOptionLabel(select);
         const selectOptions = Array.from(select.options).filter(o => o.value && o.value !== '').map(o => o.text.trim());
         matchItems.push({ element: select, inputElement: select, text: label || `Item ${index + 1}`, selectOptions, identifier: String(index + 1) });
       });
@@ -1043,17 +1193,7 @@
       }
     }
 
-    // ---- Strategy 5: Text inputs ----
-    const textInputs = container.querySelectorAll(
-      'input[type="text"], input[type="number"], input:not([type]):not([role="combobox"]), textarea'
-    );
-    if (textInputs.length > 0) {
-      const input = textInputs[0];
-      devLog('Found text input/textarea for fill-in');
-      return { type: input.tagName.toLowerCase() === 'textarea' ? 'ESSAY' : 'FILL_BLANK', options: [], inputElement: input };
-    }
-
-    // ---- Strategy 6: ARIA role-based options ----
+    // ---- Strategy 5: ARIA role-based options (before text inputs) ----
     const ariaOptions = container.querySelectorAll('[role="radio"], [role="checkbox"], [role="option"]');
     if (ariaOptions.length >= 2) {
       const options = [];
@@ -1070,101 +1210,20 @@
       return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
     }
 
-    // ---- Strategy 7: Div-based clickable options (ProProfs, etc.) ----
-    const optionListSelectors = [
-      '.answers-list > li',
-      '.answer-list > li',
-      '.options-list > li',
-      '.choices > li',
-      '[class*="answer-option"]',
-      '[class*="choice-item"]',
-      '.opt_text',
-      // More generic patterns
-      'ul.options > li',
-      'ol.options > li',
-      '.answer-choices > div',
-      '[class*="answerOption"]',
-      '[class*="choiceItem"]',
-      '[class*="AnswerChoice"]',
-      '[data-answer]',
-      '[data-option]',
-      // Button-based options
-      'button[class*="option"]',
-      'button[class*="answer"]',
-      'button[class*="choice"]',
-    ];
-    for (const sel of optionListSelectors) {
-      const items = container.querySelectorAll(sel);
-      if (items.length >= 2) {
-        const options = [];
-        items.forEach((item, index) => {
-          const optText = item.querySelector('.opt_text') || item;
-          const text = optText.textContent.trim();
-          if (text) {
-            options.push({
-              element: item,
-              inputElement: item,
-              text: text,
-              value: text,
-              identifier: String.fromCharCode(65 + index),
-              isCustom: true
-            });
-          }
-        });
-        if (options.length >= 2) {
-          devLog('Options found via div-based selector:', sel, options.length);
-          return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
-        }
-      }
+    // ---- Strategy 6: Universal div-based clickable options ----
+    const divOptions = findDivBasedOptions(container);
+    if (divOptions && divOptions.length >= 2) {
+      return { type: isTrueFalse(divOptions) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options: divOptions };
     }
 
-    // ---- Strategy 8: data-testid patterns ----
-    const testIdOptions = container.querySelectorAll('[data-testid*="answer"], [data-testid*="option"]');
-    if (testIdOptions.length >= 2) {
-      const options = [];
-      testIdOptions.forEach((opt, index) => {
-        options.push({
-          element: opt, inputElement: opt,
-          text: opt.textContent.trim(),
-          value: opt.getAttribute('data-value') || opt.textContent.trim(),
-          identifier: String.fromCharCode(65 + index),
-          isCustom: true
-        });
-      });
-      devLog('Options found via data-testid:', options.length);
-      return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
-    }
-
-    // ---- Strategy 9: Clickable list items with reasonable text ----
-    // Generic fallback: find <li> children of any list within the container
-    // that look like answer options (have text, roughly similar length, multiple items)
-    const lists = container.querySelectorAll('ul, ol');
-    for (const list of lists) {
-      const items = list.querySelectorAll(':scope > li');
-      if (items.length >= 2 && items.length <= 10) {
-        const texts = [];
-        items.forEach(item => texts.push(item.textContent.trim()));
-        // Check that items look like options (not navigation, not empty)
-        const nonEmpty = texts.filter(t => t.length > 0 && t.length < 500);
-        if (nonEmpty.length >= 2) {
-          const options = [];
-          items.forEach((item, index) => {
-            const text = item.textContent.trim();
-            if (text.length > 0 && text.length < 500) {
-              options.push({
-                element: item, inputElement: item,
-                text, value: text,
-                identifier: String.fromCharCode(65 + index),
-                isCustom: true
-              });
-            }
-          });
-          if (options.length >= 2) {
-            devLog('Options found via generic list items:', options.length);
-            return { type: isTrueFalse(options) ? 'TRUE_FALSE' : 'MULTIPLE_CHOICE', options };
-          }
-        }
-      }
+    // ---- Strategy 7: Text inputs (last resort before SHORT_ANSWER) ----
+    const textInputs = container.querySelectorAll(
+      'input[type="text"], input[type="number"], input:not([type]):not([role="combobox"]), textarea'
+    );
+    if (textInputs.length > 0) {
+      const input = textInputs[0];
+      devLog('Found text input/textarea for fill-in');
+      return { type: input.tagName.toLowerCase() === 'textarea' ? 'ESSAY' : 'FILL_BLANK', options: [], inputElement: input };
     }
 
     devLog('No options found — treating as SHORT_ANSWER');
@@ -1179,7 +1238,10 @@
     }
 
     devLog('Question container:', container.tagName, container.className?.toString()?.substring(0, 60),
-           'textLen:', container.textContent.trim().length);
+      'textLen:', container.textContent.trim().length);
+
+    // NEW: Get cleaned HTML for AI — primary content source
+    const containerHTML = cleanContainerHTML(container);
 
     let questionText = extractQuestionText(container);
     const optionData = extractOptionsAndType(container);
@@ -1202,25 +1264,33 @@
     // Detect question subtype for accuracy enhancement
     const { refinedType, instructions } = detectQuestionSubtype(questionText, optionData.type);
 
+    const platform = detectPlatform();
+    const isNegation = refinedType === 'MCQ_NEGATIVE' || refinedType === 'MCQ_EXCEPT';
+
     devLog('Question extracted:', {
       type: optionData.type,
       refinedType,
+      isNegation,
+      platform,
       instructions: instructions ? instructions.substring(0, 50) : '(none)',
       textLength: questionText.length,
       options: optionData.options?.length || 0,
       matchItems: optionData.matchItems?.length || 0,
       images: images.length,
-      questionPreview: questionText.substring(0, 80)
+      questionPreview: questionText.substring(0, 300)
     });
 
     return {
+      containerHTML,
       questionText,
       type: refinedType,
       baseType: optionData.type,
+      isNegation,
       instructions,
       options: optionData.options.map(o => ({ text: o.text, identifier: o.identifier, value: o.value })),
       matchItems: optionData.matchItems?.map(m => ({ text: m.text, identifier: m.identifier, selectOptions: m.selectOptions })),
       images,
+      platform,
       _domRefs: {
         container,
         options: optionData.options,
@@ -1310,14 +1380,14 @@
     devLog('selectRadioOrCheckbox:', input.type, input.name, input.value?.substring(0, 30));
 
     // Ensure visible
-    try { input.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) {}
+    try { input.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) { }
 
     // Strategy 1: Focus + full event sequence on input
-    try { input.focus(); } catch (_) {}
+    try { input.focus(); } catch (_) { }
     dispatchFullClickSequence(input);
 
     // Strategy 2: Native .click() — handles jQuery, onclick attrs
-    try { input.click(); } catch (_) {}
+    try { input.click(); } catch (_) { }
 
     // Strategy 3: Explicitly set checked + fire change/input events
     // This is the most reliable for React (uses native setter to trigger React's onChange)
@@ -1336,7 +1406,7 @@
     const label = findLabelElement(input);
     if (label && label !== input) {
       devLog('Also clicking label for input');
-      try { label.click(); } catch (_) {}
+      try { label.click(); } catch (_) { }
       dispatchFullClickSequence(label);
     }
 
@@ -1344,7 +1414,7 @@
     try {
       input.focus();
       dispatchKeyboardSpace(input);
-    } catch (_) {}
+    } catch (_) { }
 
     // Verify after a short delay
     setTimeout(() => {
@@ -1352,11 +1422,11 @@
         devWarn('Click verification FAILED — force-setting checked');
         input.checked = true;
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        try { input.click(); } catch (_) {}
+        try { input.click(); } catch (_) { }
         // Try the container too
         const container = input.closest('li, div, label, [class*="option"], [class*="answer"]');
         if (container) {
-          try { container.click(); } catch (_) {}
+          try { container.click(); } catch (_) { }
         }
       } else {
         devLog('Click verification OK — input.checked = true');
@@ -1370,24 +1440,24 @@
    */
   function clickCustomOption(element) {
     devLog('clickCustomOption:', element.tagName, element.className?.toString()?.substring(0, 40),
-           'text:', element.textContent?.substring(0, 30));
+      'text:', element.textContent?.substring(0, 30));
 
     // Ensure visible
-    try { element.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) {}
+    try { element.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) { }
 
     // Strategy 1: Focus + full event sequence
-    try { element.focus(); } catch (_) {}
+    try { element.focus(); } catch (_) { }
     dispatchFullClickSequence(element);
 
     // Strategy 2: Native .click()
-    try { element.click(); } catch (_) {}
+    try { element.click(); } catch (_) { }
 
     // Strategy 3: Keyboard activation
     try {
       element.focus();
       dispatchKeyboardEnter(element);
       dispatchKeyboardSpace(element);
-    } catch (_) {}
+    } catch (_) { }
 
     // Strategy 4: Try touch events (mobile-optimized sites)
     try {
@@ -1409,7 +1479,7 @@
     for (const child of childTargets) {
       if (child !== element) {
         setTimeout(() => {
-          try { child.click(); } catch (_) {}
+          try { child.click(); } catch (_) { }
           dispatchFullClickSequence(child);
         }, 30);
       }
@@ -1434,7 +1504,7 @@
     const parentLi = element.closest('li');
     if (parentLi && parentLi !== element) {
       setTimeout(() => {
-        try { parentLi.click(); } catch (_) {}
+        try { parentLi.click(); } catch (_) { }
         dispatchFullClickSequence(parentLi);
       }, 60);
     }
@@ -1621,10 +1691,10 @@
   function applyAnswer(domRefs, answer) {
     const { type, options, matchItems, inputElement, isDropdown } = domRefs;
     devLog('Applying answer:', answer, 'mode:', answerMode, 'type:', type,
-           'options:', options?.length || 0);
+      'options:', options?.length || 0);
 
     if (answerMode === 'clipboard') {
-      navigator.clipboard.writeText(answer).catch(() => {});
+      navigator.clipboard.writeText(answer).catch(() => { });
       devLog('Answer copied to clipboard');
       return;
     }
@@ -1635,12 +1705,12 @@
         const matched = findMatchingOption(options, answer);
         if (!matched) {
           devWarn('No matching option found for answer:', answer,
-                  'available:', options.map(o => `${o.identifier}="${o.text?.substring(0, 25)}"`));
-          navigator.clipboard.writeText(answer).catch(() => {});
+            'available:', options.map(o => `${o.identifier}="${o.text?.substring(0, 25)}"`));
+          navigator.clipboard.writeText(answer).catch(() => { });
           return;
         }
         devLog('Matched option:', matched.identifier, '"' + matched.text?.substring(0, 40) + '"',
-               'isCustom:', !!matched.isCustom, 'isDropdown:', !!isDropdown);
+          'isCustom:', !!matched.isCustom, 'isDropdown:', !!isDropdown);
 
         if (answerMode === 'auto') {
           if (isDropdown && matched.isSelectOption) {
@@ -1683,7 +1753,7 @@
         });
         if (!anyMatched) {
           devWarn('No multi-select options matched:', selectedIds);
-          navigator.clipboard.writeText(answer).catch(() => {});
+          navigator.clipboard.writeText(answer).catch(() => { });
         }
         break;
       }
@@ -1691,7 +1761,7 @@
       case 'MATCHING': {
         if (!matchItems || matchItems.length === 0) {
           devWarn('No match items for MATCHING type');
-          navigator.clipboard.writeText(answer).catch(() => {});
+          navigator.clipboard.writeText(answer).catch(() => { });
           return;
         }
         const pairs = answer.split(',').map(s => s.trim());
@@ -1743,21 +1813,21 @@
                 devLog('Fallback text input filled');
               }
             } else {
-              navigator.clipboard.writeText(answer).catch(() => {});
+              navigator.clipboard.writeText(answer).catch(() => { });
               devLog('No input found, copied to clipboard');
             }
           } else {
-            navigator.clipboard.writeText(answer).catch(() => {});
+            navigator.clipboard.writeText(answer).catch(() => { });
           }
         } else {
-          navigator.clipboard.writeText(answer).catch(() => {});
+          navigator.clipboard.writeText(answer).catch(() => { });
         }
         break;
       }
 
       default:
         devWarn('Unknown question type:', type);
-        navigator.clipboard.writeText(answer).catch(() => {});
+        navigator.clipboard.writeText(answer).catch(() => { });
     }
   }
 
@@ -1775,23 +1845,18 @@
     style.textContent = `
       .qs-modal-overlay {
         position: fixed;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0, 0, 0, 0.45);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
+        inset: 0;
         z-index: 2147483647;
         display: flex;
         align-items: center;
         justify-content: center;
-        opacity: 0;
-        transition: opacity 0.2s ease;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        background: transparent;
       }
-      .qs-modal-overlay.qs-visible { opacity: 1; }
       .qs-modal {
         background: #fff;
         border-radius: 14px;
-        box-shadow: 0 25px 60px -12px rgba(0,0,0,0.3);
+        border: 2px solid #2DD4BF;
+        box-shadow: 0 25px 60px -12px rgba(0,0,0,0.3), 0 0 0 1px rgba(45, 212, 191, 0.3);
         max-width: 380px;
         width: 92vw;
         max-height: 70vh;
@@ -1916,7 +1981,16 @@
         background: #F8FAFC;
         border-radius: 10px;
         border: 1px solid #E2E8F0;
-        white-space: pre-wrap;
+      }
+      .qs-modal-explanation p { margin: 0 0 8px 0; }
+      .qs-modal-explanation p:last-child { margin-bottom: 0; }
+      .qs-modal-explanation strong { color: #111827; }
+      .qs-modal-explanation ol, .qs-modal-explanation ul {
+        margin: 6px 0;
+        padding-left: 20px;
+      }
+      .qs-modal-explanation li {
+        margin-bottom: 4px;
       }
       .qs-modal-footer {
         display: flex;
@@ -1992,7 +2066,6 @@
   }
 
   function showExplanationModal(questionText) {
-    if (!IS_DEV) return null;
     injectExplanationStyles();
 
     if (explanationModalElement) explanationModalElement.remove();
@@ -2104,6 +2177,38 @@
     document.addEventListener('mouseup', onUp);
   }
 
+  function formatExplanationText(text) {
+    // Convert simple markdown to HTML
+    let html = escapeHTML(text);
+
+    // Bold: **text**
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // Numbered lists: lines starting with "1. ", "2. " etc.
+    html = html.replace(/^(\d+)\.\s+(.+)$/gm, '<li value="$1">$2</li>');
+    html = html.replace(/((?:<li[^>]*>.*<\/li>\s*)+)/g, '<ol>$1</ol>');
+
+    // Bullet lists: lines starting with "- "
+    html = html.replace(/^-\s+(.+)$/gm, '<li>$1</li>');
+    html = html.replace(/((?:<li>.*<\/li>\s*)+)/g, (match) => {
+      // Only wrap in <ul> if not already inside <ol>
+      if (match.includes('value=')) return match;
+      return '<ul>' + match + '</ul>';
+    });
+
+    // Line breaks for remaining newlines (but not inside lists)
+    html = html.replace(/\n{2,}/g, '</p><p>');
+    html = html.replace(/\n/g, '<br>');
+
+    // Wrap in paragraph
+    html = '<p>' + html + '</p>';
+
+    // Clean up empty paragraphs
+    html = html.replace(/<p>\s*<\/p>/g, '');
+
+    return html;
+  }
+
   function updateExplanationModal(answer, explanation, domRefs, options) {
     if (!explanationModalElement) return;
 
@@ -2114,31 +2219,31 @@
     const explanationText = explanationModalElement.querySelector('#qs-explanation-text');
     const applyBtn = explanationModalElement.querySelector('#qs-apply-btn');
 
-    // Determine the answer letter and matched option text
-    let displayLetter = answer;
-    let displayText = '';
-    if (options && options.length > 0) {
-      const matched = findMatchingOption(options.map(o => ({ text: o.text, identifier: o.identifier, value: o.value })), answer);
-      if (matched) {
-        displayLetter = matched.identifier;
-        displayText = matched.text;
-      }
-    }
+    if (loading) loading.style.display = 'none';
 
-    if (answerSection && answerLetter) {
+    // Show answer section only when answer is provided (Solve mode)
+    if (answer && answerSection && answerLetter) {
+      let displayLetter = answer;
+      let displayText = '';
+      if (options && options.length > 0) {
+        const matched = findMatchingOption(options.map(o => ({ text: o.text, identifier: o.identifier, value: o.value })), answer);
+        if (matched) {
+          displayLetter = matched.identifier;
+          displayText = matched.text;
+        }
+      }
       answerLetter.textContent = displayLetter.length <= 2 ? displayLetter : displayLetter.charAt(0);
       answerText.textContent = displayText || answer;
       answerSection.style.display = '';
     }
 
-    if (loading) loading.style.display = 'none';
-
     if (explanationText && explanation) {
-      explanationText.textContent = explanation;
+      explanationText.innerHTML = formatExplanationText(explanation);
       explanationText.style.display = '';
     }
 
-    if (applyBtn && domRefs) {
+    // Show Apply button only when there's an answer to apply
+    if (applyBtn && domRefs && answer) {
       applyBtn.style.display = '';
       applyBtn.addEventListener('click', () => {
         applyAnswer(domRefs, answer);
@@ -2322,6 +2427,7 @@
         const sel = window.getSelection();
         const anchor = sel?.anchorNode?.parentElement || document.body;
         const context = await extractQuestionContext(anchor);
+        const msgType = action === 'solve' ? 'PROCESS_SOLVE' : 'PROCESS_EXPLANATION';
 
         if (!context) {
           // Fallback: treat selected text as the question directly
@@ -2329,75 +2435,47 @@
             questionText: text,
             type: 'SHORT_ANSWER',
             baseType: 'SHORT_ANSWER',
+            isNegation: false,
             instructions: '',
             options: [],
             images: [],
+            platform: detectPlatform(),
           };
 
-          if (action === 'explain') {
-            const modal = showExplanationModal(text);
-            if (!modal) { processing = false; return; }
-            try {
-              const resp = await new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage(
-                  { type: 'PROCESS_EXPLANATION', data: fallbackContext },
-                  (r) => {
-                    if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                    if (r.success) resolve(r);
-                    else reject(new Error(r.error));
-                  }
-                );
-              });
-              updateExplanationModal(resp.answer, resp.explanation, null, []);
-            } catch (err) { showExplanationError(err.message); }
-          } else {
-            // Solve with no options - just get answer and copy
+          const modal = showExplanationModal(text);
+          if (!modal) { processing = false; return; }
+          try {
             const resp = await new Promise((resolve, reject) => {
               chrome.runtime.sendMessage(
-                { type: 'PROCESS_QUESTION', data: fallbackContext },
+                { type: msgType, data: fallbackContext },
                 (r) => {
                   if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                  if (r.success) resolve(r.answer);
+                  if (r.success) resolve(r);
                   else reject(new Error(r.error));
                 }
               );
             });
-            navigator.clipboard.writeText(resp).catch(() => {});
-            devLog('Answer from selection (solve):', resp);
-          }
+            updateExplanationModal(resp.answer, resp.explanation, null, []);
+          } catch (err) { showExplanationError(err.message); }
         } else {
           const domRefs = context._domRefs;
           delete context._domRefs;
 
-          if (action === 'explain') {
-            const modal = showExplanationModal(context.questionText);
-            if (!modal) { processing = false; return; }
-            try {
-              const resp = await new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage(
-                  { type: 'PROCESS_EXPLANATION', data: context },
-                  (r) => {
-                    if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                    if (r.success) resolve(r);
-                    else reject(new Error(r.error));
-                  }
-                );
-              });
-              updateExplanationModal(resp.answer, resp.explanation, domRefs, context.options);
-            } catch (err) { showExplanationError(err.message); }
-          } else {
+          const modal = showExplanationModal(context.questionText);
+          if (!modal) { processing = false; return; }
+          try {
             const resp = await new Promise((resolve, reject) => {
               chrome.runtime.sendMessage(
-                { type: 'PROCESS_QUESTION', data: context },
+                { type: msgType, data: context },
                 (r) => {
                   if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                  if (r.success) resolve(r.answer);
+                  if (r.success) resolve(r);
                   else reject(new Error(r.error));
                 }
               );
             });
-            applyAnswer(domRefs, resp);
-          }
+            updateExplanationModal(resp.answer, resp.explanation, domRefs, context.options);
+          } catch (err) { showExplanationError(err.message); }
         }
       }
     } catch (err) {
@@ -2461,7 +2539,7 @@
     if (copyBtn) {
       copyBtn.style.display = '';
       copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(result).catch(() => {});
+        navigator.clipboard.writeText(result).catch(() => { });
         copyBtn.textContent = 'Copied!';
         setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
       });
@@ -2681,14 +2759,16 @@
         questionText: '[The question is in the attached image. Analyze the image to determine the question, identify the options if any, and provide the correct answer.]',
         type: 'MULTIPLE_CHOICE',
         baseType: 'MULTIPLE_CHOICE',
+        isNegation: false,
         instructions: '',
         options: [],
         images: [imageData],
+        platform: detectPlatform(),
       };
 
       const resp = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage(
-          { type: 'PROCESS_EXPLANATION', data: context },
+          { type: 'PROCESS_SOLVE', data: context },
           (r) => {
             if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
             if (r.success) resolve(r);
@@ -2737,21 +2817,28 @@
       return;
     }
 
+    // Check for Ctrl (Win/Linux) or Cmd (Mac)
+    const modKey = e.ctrlKey || e.metaKey;
+
+    // Ctrl/Cmd+Shift+D → Draw region (works when feature is enabled, independent of isActive)
+    if (modKey && e.shiftKey && e.key === 'D') {
+      if (featureDrawRegion) {
+        e.preventDefault();
+        startDrawRegion();
+      }
+      return;
+    }
+
+    // Ctrl/Cmd+Shift+S → Snap it (works when feature is enabled, independent of isActive)
+    if (modKey && e.shiftKey && e.key === 'S') {
+      if (featureSnapIt) {
+        e.preventDefault();
+        snapIt();
+      }
+      return;
+    }
+
     if (!isActive) return;
-
-    // Ctrl+Shift+D → Draw region
-    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
-      e.preventDefault();
-      startDrawRegion();
-      return;
-    }
-
-    // Ctrl+Shift+S → Snap it
-    if (e.ctrlKey && e.shiftKey && e.key === 'S') {
-      e.preventDefault();
-      snapIt();
-      return;
-    }
   });
 
   // ============================================================
@@ -2763,70 +2850,65 @@
    * Tries: (1) direct click target, (2) the selected text's parent, (3) element at click position,
    * (4) nearest question container by proximity.
    */
-  function resolveClickTarget(e) {
-    const target = e.target;
-
-    // 1. If the click target is inside a known question selector, use it directly
-    for (const selector of QUESTION_ITEM_SELECTORS) {
-      try {
-        const match = target.closest(selector);
-        if (match && isVisible(match)) return target;
-      } catch (_) {}
+  function resolveClickTarget(e, selInfo) {
+    // Use selection anchor if available (user highlighted text near the question)
+    if (selInfo && selInfo.anchor && selInfo.anchor !== document.body) {
+      devLog('Using selection anchor as target:', selInfo.anchor.tagName);
+      return selInfo.anchor;
     }
-
-    // 2. Check if there's a text selection — use the selection's anchor node
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && sel.toString().trim().length > 0) {
-      const anchorEl = sel.anchorNode?.nodeType === Node.TEXT_NODE
-        ? sel.anchorNode.parentElement : sel.anchorNode;
-      if (anchorEl && anchorEl !== document.body) {
-        devLog('Using selection anchor as target:', anchorEl.tagName);
-        return anchorEl;
-      }
-    }
-
-    // 3. Try elementFromPoint for precision
-    const pointEl = document.elementFromPoint(e.clientX, e.clientY);
-    if (pointEl && pointEl !== target && pointEl !== document.body) {
-      // Check if pointEl is in a question container
-      for (const selector of QUESTION_ITEM_SELECTORS) {
-        try {
-          if (pointEl.closest(selector)) {
-            devLog('Using elementFromPoint as target:', pointEl.tagName);
-            return pointEl;
-          }
-        } catch (_) {}
-      }
-    }
-
-    return target;
+    return e.target;
   }
 
   document.addEventListener('dblclick', async (e) => {
-    if (!isActive || processing) return;
+    if (!isActive || !featureDblClickSolve || processing) return;
 
-    const isExplainMode = IS_DEV && e.shiftKey;
+    // 1d. Debounce — reject clicks within 300ms
+    const now = Date.now();
+    if (now - lastDblClickTime < 300) {
+      devLog('Debounced double-click (too fast)');
+      return;
+    }
+    lastDblClickTime = now;
+
+    // 1g. Offline detection
+    if (!navigator.onLine) {
+      showToast('You are offline. Check your internet connection.', 'error', 4000);
+      return;
+    }
+
+    const isExplainMode = e.shiftKey;
 
     devLog('--- DOUBLE-CLICK ---', isExplainMode ? '(EXPLAIN MODE)' : '');
     devLog('Target:', e.target.tagName,
-           'class:', e.target.className?.toString()?.substring(0, 60),
-           'id:', e.target.id?.substring(0, 30),
-           'at:', Math.round(e.clientX) + ',' + Math.round(e.clientY));
+      'class:', e.target.className?.toString()?.substring(0, 60),
+      'id:', e.target.id?.substring(0, 30),
+      'at:', Math.round(e.clientX) + ',' + Math.round(e.clientY));
+
+    // 1e. Capture selection info before clearing
+    const sel = window.getSelection();
+    const selInfo = sel && sel.rangeCount > 0 && sel.toString().trim().length > 0
+      ? { anchor: sel.anchorNode?.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode, text: sel.toString().trim() }
+      : null;
+    // Clear text selection caused by double-click
+    try { sel?.removeAllRanges(); } catch (_) {}
 
     processing = true;
     const startTime = Date.now();
+    let loadingToast = null;
+    let processingContainer = null;
 
     try {
-      // Smart target resolution
-      const resolvedTarget = resolveClickTarget(e);
+      // Smart target resolution (pass selInfo)
+      const resolvedTarget = resolveClickTarget(e, selInfo);
       if (resolvedTarget !== e.target) {
         devLog('Resolved target:', resolvedTarget.tagName,
-               'class:', resolvedTarget.className?.toString()?.substring(0, 40));
+          'class:', resolvedTarget.className?.toString()?.substring(0, 40));
       }
 
       const context = await extractQuestionContext(resolvedTarget);
       if (!context) {
         devWarn('No question context found — took', Date.now() - startTime, 'ms');
+        showToast('No question detected. Try clicking directly on a question.', 'error', 3000);
         processing = false;
         return;
       }
@@ -2834,13 +2916,25 @@
       const domRefs = context._domRefs;
       delete context._domRefs;
 
+      // 1b. Loading indicator on question container (only when notifications enabled)
+      processingContainer = domRefs.container;
+      if (processingContainer && featureNotifications) {
+        processingContainer.classList.add('qs-processing');
+      }
+
+      // 1f. Loading toast
+      const requestTimeout = 35000;
+      loadingToast = showToast('Processing question...', 'loading');
+
       devLog('Sending to AI:', context.type,
-             'options:', context.options?.length || 0,
-             'images:', context.images?.length || 0,
-             'question:', context.questionText?.substring(0, 80));
+        'options:', context.options?.length || 0,
+        'images:', context.images?.length || 0,
+        'question:', context.questionText?.substring(0, 80));
 
       if (isExplainMode) {
         // --- Explanation Mode: show modal with answer + explanation ---
+        if (loadingToast) loadingToast.dismiss();
+        loadingToast = null;
         const modal = showExplanationModal(context.questionText);
         if (!modal) {
           processing = false;
@@ -2848,16 +2942,21 @@
         }
 
         try {
-          const response = await new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage(
-              { type: 'PROCESS_EXPLANATION', data: context },
-              (resp) => {
-                if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                if (resp.success) resolve(resp);
-                else reject(new Error(resp.error));
-              }
-            );
-          });
+          // 1c. Timeout wrapper
+          const response = await withTimeout(
+            new Promise((resolve, reject) => {
+              chrome.runtime.sendMessage(
+                { type: 'PROCESS_EXPLANATION', data: context },
+                (resp) => {
+                  if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  if (resp.success) resolve(resp);
+                  else reject(new Error(resp.error));
+                }
+              );
+            }),
+            requestTimeout,
+            `Request timed out after ${requestTimeout / 1000} seconds. Please try again.`
+          );
 
           devLog('Explanation received — total time:', Date.now() - startTime, 'ms');
           updateExplanationModal(response.answer, response.explanation, domRefs, context.options);
@@ -2867,25 +2966,55 @@
         }
       } else {
         // --- Normal Mode: auto-answer ---
-        const response = await new Promise((resolve, reject) => {
-          chrome.runtime.sendMessage(
-            { type: 'PROCESS_QUESTION', data: context },
-            (resp) => {
-              if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-              if (resp.success) resolve(resp.answer);
-              else reject(new Error(resp.error));
-            }
-          );
-        });
+        // 1c. Timeout wrapper
+        const response = await withTimeout(
+          new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage(
+              { type: 'PROCESS_QUESTION', data: context },
+              (resp) => {
+                if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                if (resp.success) resolve(resp.answer);
+                else reject(new Error(resp.error));
+              }
+            );
+          }),
+          requestTimeout,
+          `Request timed out after ${requestTimeout / 1000} seconds. Please try again.`
+        );
 
         devLog('AI answer:', response, '— total time:', Date.now() - startTime, 'ms');
+        if (loadingToast) loadingToast.dismiss();
+        loadingToast = null;
         applyAnswer(domRefs, response);
+        showToast('Answer applied', 'success', 2000);
       }
     } catch (err) {
       devError('Error processing question:', err.message);
-      devError('Stack:', err.stack);
+      if (loadingToast) loadingToast.dismiss();
+      loadingToast = null;
+
+      // 1f. Categorized error messages
+      let userMessage = 'Something went wrong. Please try again.';
+      const msg = err.message || '';
+      if (msg.includes('timed out')) {
+        userMessage = 'Request timed out. Please try again.';
+      } else if (msg.includes('Rate limit') || msg.includes('429')) {
+        userMessage = 'Rate limit reached. Please wait a moment.';
+      } else if (msg.includes('Network') || msg.includes('Failed to fetch') || msg.includes('net::')) {
+        userMessage = 'Network error. Check your internet connection.';
+      } else if (msg.includes('API key') || msg.includes('No API key')) {
+        userMessage = 'API key not configured. Open extension settings.';
+      } else if (msg.includes('disconnected') || msg.includes('Extension context invalidated') || msg.includes('Receiving end does not exist')) {
+        userMessage = 'Extension disconnected. Reload the page.';
+      }
+
+      showToast(userMessage, 'error', 4000);
     } finally {
       processing = false;
+      // 1b. Remove loading indicator
+      if (processingContainer) {
+        processingContainer.classList.remove('qs-processing');
+      }
     }
   }, true);
 
