@@ -1,0 +1,201 @@
+/* ============================================================
+   QuizSolve - Onboarding Styles
+   ============================================================ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #111118;
+  --bg-tertiary: #191920;
+  --border: #252530;
+  --text-primary: #e8e8ec;
+  --text-secondary: #8b8fa3;
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-dim: #1a9a88;
+  --accent-glow: rgba(45, 212, 191, 0.10);
+  --blue: #3b82f6;
+  --blue-glow: rgba(59, 130, 246, 0.08);
+  --radius: 12px;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Container */
+.onboarding {
+  max-width: 560px;
+  width: 100%;
+  padding: 48px 28px;
+}
+
+/* Header */
+.onboarding-header {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.onboarding-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+
+.onboarding-title {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  background: linear-gradient(135deg, var(--blue), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 6px;
+}
+
+.onboarding-subtitle {
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+/* Steps */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.step {
+  display: flex;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.2s;
+}
+
+.step:hover {
+  border-color: var(--accent-dim);
+}
+
+.step-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.step-content h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.step-content p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: 'SF Mono', Monaco, Menlo, monospace;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  vertical-align: 1px;
+}
+
+/* Notes */
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.note-info {
+  background: var(--blue-glow);
+  border: 1px solid rgba(59, 130, 246, 0.12);
+}
+
+.note-info svg {
+  color: var(--blue);
+}
+
+.note-privacy {
+  background: var(--accent-glow);
+  border: 1px solid rgba(45, 212, 191, 0.12);
+}
+
+.note-privacy svg {
+  color: var(--accent);
+}
+
+/* CTA */
+.cta-wrap {
+  text-align: center;
+}
+
+.cta-button {
+  display: inline-block;
+  padding: 11px 36px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0a0a0f;
+  background: linear-gradient(135deg, var(--blue), var(--accent));
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+}
+
+.cta-button:hover {
+  opacity: 0.9;
+}
+
+.cta-button:active {
+  transform: scale(0.98);
+}

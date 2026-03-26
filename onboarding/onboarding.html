@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to AI Quiz Solve</title>
+  <link rel="stylesheet" href="onboarding.css">
+</head>
+<body>
+  <div class="onboarding">
+    <div class="onboarding-header">
+      <img class="onboarding-logo" src="../icons/icon128.png" alt="AI Quiz Solve">
+      <h1 class="onboarding-title">Welcome to AI Quiz Solve</h1>
+      <p class="onboarding-subtitle">Instant answers on any quiz platform.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14"/><path d="M12 5l7 7-7 7"/>
+          </svg>
+        </div>
+        <div class="step-content">
+          <h3>Activate</h3>
+          <p>Press <kbd id="shortcutKey">Ctrl+Shift+U</kbd> or click the extension icon to toggle on. The badge shows <strong>ON</strong> when active.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 15l-2 5L9 9l11 4-5 2z"/><path d="M15 15l5 5"/>
+          </svg>
+        </div>
+        <div class="step-content">
+          <h3>Double-click a question</h3>
+          <p>Double-click any quiz question to auto-detect and solve it. Hold <kbd>Shift</kbd> + double-click to get a detailed explanation instead.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+          </svg>
+        </div>
+        <div class="step-content">
+          <h3>Snap It &mdash; Screenshot Solve</h3>
+          <p>Press <kbd id="screenshotKey">Ctrl+Shift+S</kbd> or right-click &rarr; <strong>Solve with Screenshot</strong> to capture any area of the screen. Works on images, PDFs, Canvas, and tricky layouts. When text detection fails, Screenshot Solve kicks in automatically.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
+          </svg>
+        </div>
+        <div class="step-content">
+          <h3>Choose your answer mode</h3>
+          <p>
+            <strong>Auto</strong> &mdash; selects the correct answer for you<br>
+            <strong>Highlight</strong> &mdash; subtly highlights the right option<br>
+            <strong>Clipboard</strong> &mdash; copies the answer silently
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <div class="note note-info">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+        </svg>
+        <span>Notifications are <strong>on by default</strong> so you can see progress. Turn them off anytime in Settings.</span>
+      </div>
+      <div class="note note-info">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+        </svg>
+        <span><strong>Screenshot Solve is enabled by default.</strong> It also activates automatically when text detection can't find the answer choices.</span>
+      </div>
+      <div class="note note-info">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+        </svg>
+        <span>Answers default to <strong>English</strong>. Change the language anytime in <strong>Settings &rarr; Answer Language</strong>.</span>
+      </div>
+      <div class="note note-privacy">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+        </svg>
+        <span>We only read quiz content when activated. Your browsing data is never collected.</span>
+      </div>
+    </div>
+
+    <div class="cta-wrap">
+      <button class="cta-button" id="ctaButton">Got it, let's go!</button>
+    </div>
+  </div>
+
+  <script>
+    const isMac = navigator.platform.indexOf('Mac') !== -1;
+    if (isMac) {
+      document.getElementById('shortcutKey').textContent = 'Cmd+Shift+U';
+      document.getElementById('screenshotKey').textContent = 'Cmd+Shift+S';
+    }
+
+    document.getElementById('ctaButton').addEventListener('click', () => {
+      if (chrome.tabs) {
+        chrome.tabs.getCurrent((tab) => {
+          if (tab) chrome.tabs.remove(tab.id);
+        });
+      } else {
+        window.close();
+      }
+    });
+  </script>
+</body>
+</html>
