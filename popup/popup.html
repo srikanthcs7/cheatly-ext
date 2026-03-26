@@ -21,7 +21,7 @@
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <div class="logo">QS</div>
+        <img class="logo" src="../icons/icon48.png" alt="AI Quiz Solve">
         <div>
           <h1 class="title">AI Quiz Solve</h1>
           <p class="subtitle" id="version"></p>
@@ -62,44 +62,20 @@
           </div>
           <div class="account-logged-out" id="accountLoggedOut">
             <div class="token-row">
-              <input type="password" id="tokenInput" class="input" placeholder="Paste your login token...">
-              <button class="btn-icon" id="btnLogin" title="Login">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
-                </svg>
-              </button>
+              <input type="password" id="tokenInput" class="input" placeholder="Paste your Pro token">
+              <button class="btn-login" id="btnLogin">Login</button>
             </div>
+            <p class="token-help-text">Already subscribed? <a href="https://getquizsolve.com/account" target="_blank" class="token-help-link">Get your token here</a></p>
           </div>
           <div class="account-logged-in" id="accountLoggedIn" style="display:none">
-            <div class="account-user-row">
-              <span class="account-email" id="accountEmail">user@example.com</span>
+            <span class="account-email" id="accountEmail">user@example.com</span>
+            <div class="account-actions">
+              <button class="btn-manage-sub" id="btnManageSub" style="display:none">Manage Subscription</button>
               <button class="btn-logout" id="btnLogout">Logout</button>
             </div>
           </div>
         </div>
       </div>
-
-      <!-- API Mode Section -->
-      <div class="section">
-        <label class="section-label">API Mode</label>
-        <div class="radio-group">
-          <label class="radio-option compact">
-            <input type="radio" name="apiMode" value="quizsolve_free" checked>
-            <span class="radio-label">
-              <strong>QuizSolve Free</strong>
-              <small>20 questions/day — no key needed</small>
-            </span>
-          </label>
-          <label class="radio-option compact">
-            <input type="radio" name="apiMode" value="quizsolve_pro">
-            <span class="radio-label">
-              <strong>QuizSolve Pro</strong>
-              <small>Unlimited — requires login</small>
-            </span>
-          </label>
-        </div>
-      </div>
-
 
       <!-- Answer Mode Section -->
       <div class="section">
@@ -138,9 +114,9 @@
         </div>
       </div>
 
-      <!-- Advanced Features -->
+      <!-- Features -->
       <div class="section">
-        <label class="section-label">Advanced Features</label>
+        <label class="section-label">Features</label>
 
         <div class="switch-row" style="margin-bottom: 8px" title="When off, shortcuts and selection actions still work — only double-click auto-answering is disabled">
           <div class="switch-info">
@@ -164,43 +140,26 @@
           </label>
         </div>
 
-        <div class="switch-row" style="margin-bottom: 8px">
+        <div class="switch-row screenshot-solve-row" style="margin-bottom: 8px" title="Best for image-based, diagram, and visual questions">
           <div class="switch-info">
-            <strong style="font-size: 12px">Rephrase</strong>
-            <small class="help-text">Rephrase option on text selection</small>
+            <strong style="font-size: 12px">Screenshot Solve</strong>
+            <small class="help-text">Select a region to solve <kbd>Ctrl+Shift+S</kbd></small>
           </div>
-          <label class="toggle toggle-sm">
-            <input type="checkbox" id="featureRephrase">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-
-        <div class="switch-row switch-row-disabled" style="margin-bottom: 8px" title="Coming soon">
-          <div class="switch-info">
-            <strong style="font-size: 12px">Draw to Solve <span class="coming-soon-badge">Coming Soon</span></strong>
-            <small class="help-text">Draw rectangle to capture &amp; solve <kbd>Ctrl+Shift+D</kbd></small>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <button class="btn-icon btn-icon-sm" id="btnScreenshotSolve" title="Capture now">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </button>
+            <label class="toggle toggle-sm">
+              <input type="checkbox" id="featureScreenshotSolve">
+              <span class="toggle-slider"></span>
+            </label>
           </div>
-          <label class="toggle toggle-sm">
-            <input type="checkbox" id="featureDrawRegion" disabled>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-
-        <div class="switch-row switch-row-disabled" style="margin-bottom: 8px" title="Coming soon">
-          <div class="switch-info">
-            <strong style="font-size: 12px">Snap It <span class="coming-soon-badge">Coming Soon</span></strong>
-            <small class="help-text">Capture screen to solve <kbd>Ctrl+Shift+S</kbd></small>
-          </div>
-          <label class="toggle toggle-sm">
-            <input type="checkbox" id="featureSnapIt" disabled>
-            <span class="toggle-slider"></span>
-          </label>
         </div>
 
         <div class="switch-row" style="margin-bottom: 8px">
           <div class="switch-info">
             <strong style="font-size: 12px">Show Notifications</strong>
-            <small class="help-text">Toast messages &amp; loading indicators</small>
+            <small class="help-text">Shows progress, answers &amp; error alerts on-page</small>
           </div>
           <label class="toggle toggle-sm">
             <input type="checkbox" id="featureNotifications">
@@ -208,14 +167,34 @@
           </label>
         </div>
 
-        <div class="section" style="margin-top: 8px">
-          <label class="section-label">Modal Size</label>
-          <select id="modalSize" class="select">
-            <option value="small">Small (compact)</option>
-            <option value="medium">Medium</option>
-            <option value="large">Large</option>
-          </select>
+      </div>
+
+      <!-- Answer Popup Size -->
+      <div class="section">
+        <label class="section-label">Answer Popup Size</label>
+        <select id="modalSize" class="select">
+          <option value="small">Small</option>
+          <option value="medium">Medium</option>
+          <option value="large">Large</option>
+        </select>
+      </div>
+
+      <!-- Language -->
+      <div class="section">
+        <label class="section-label">Answer Language</label>
+        <div class="search-select" id="languageSelect">
+          <button class="search-select-trigger" id="langTrigger" type="button">
+            <span class="search-select-value" id="langValue">English</span>
+            <svg class="search-select-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="search-select-dropdown" id="langDropdown">
+            <div class="search-select-search-wrap">
+              <input type="text" class="search-select-input" id="langSearch" placeholder="Search languages..." autocomplete="off" spellcheck="false">
+            </div>
+            <ul class="search-select-list" id="langList"></ul>
+          </div>
         </div>
+        <p class="help-text" style="margin-top:4px">Language for AI answers and explanations</p>
       </div>
     </div>
 
@@ -253,7 +232,7 @@
         <div class="progress-bar-container">
           <div class="progress-bar" id="usageProgressBar" style="width: 0%"></div>
         </div>
-        <p class="help-text" id="usageLimitText">Free plan: 20/day</p>
+        <p class="help-text" id="usageLimitText">Free plan: 10/day (incl. 3 Snap It)</p>
       </div>
 
       <div class="section">
@@ -297,16 +276,15 @@
     </div>
 
     <!-- Help Tab -->
-    <div class="tab-content" id="tab-help">
+    <div class="tab-content" id="tab-help" style="position: relative;">
+      <a href="https://quizsolve.canny.io/feature-requests" target="_blank" class="link feature-request-link">Request a Feature</a>
       <div class="help-section">
         <h3>How to Use</h3>
         <ol class="help-list">
-          <li>Choose API mode in Settings (Free or Pro)</li>
           <li>Press <kbd>Ctrl+Shift+U</kbd> to activate on any page</li>
           <li>Double-click on any question to get the answer</li>
           <li><kbd>Shift</kbd>+Double-click for answer with explanation</li>
-          <li><kbd>Ctrl+Shift+D</kbd> Draw region to capture &amp; solve</li>
-          <li><kbd>Ctrl+Shift+S</kbd> Snap full screen to solve</li>
+          <li><kbd>Ctrl+Shift+S</kbd> Screenshot Solve — select a region to solve</li>
         </ol>
       </div>
 
@@ -316,6 +294,7 @@
         <ul class="help-list">
           <li><strong>Highlight</strong> — subtly highlights the correct option without interacting with the page</li>
           <li><strong>Clipboard</strong> — copies the answer to your clipboard silently, no page interaction at all</li>
+          <li><strong>Screenshot Solve</strong> — press <kbd>Ctrl+Shift+S</kbd> to select and solve any region on screen</li>
         </ul>
         <p class="help-text" style="margin-top: 6px">You can change the answer mode in <strong>Settings → Answer Mode</strong>.</p>
       </div>
@@ -344,19 +323,29 @@
       </div>
 
       <div class="help-section">
-        <h3>Minimal UI Design</h3>
+        <h3>Lightweight Design</h3>
         <ul class="help-list">
-          <li>No visible UI on the page</li>
           <li>Off by default — activate only when needed</li>
-          <li>Double-click behaves normally</li>
-          <li>No branding or overlays</li>
+          <li>Minimal on-page interface with small answer popup</li>
+          <li>Use Clipboard mode for a non-visual workflow</li>
+          <li>No branding or overlays on quiz pages</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h3>Privacy & Permissions</h3>
+        <ul class="help-list">
+          <li>We only process quiz content when you activate the extension</li>
+          <li>Your general browsing data is never collected or stored</li>
+          <li>The "all sites" permission is needed to work on any quiz platform</li>
+          <li>The extension is completely inactive until you turn it on</li>
         </ul>
       </div>
 
       <div class="help-section">
         <h3>Need Help?</h3>
         <p class="help-text">If you need further assistance, reach out to us at:</p>
-        <a href="mailto:aiquizsolve@gmail.com" class="link" style="margin-top: 4px; display: inline-block;">aiquizsolve@gmail.com</a>
+        <a href="mailto:support@getquizsolve.com" class="link" style="margin-top: 4px; display: inline-block;">support@getquizsolve.com</a>
       </div>
 
       <div class="help-section footer-link">

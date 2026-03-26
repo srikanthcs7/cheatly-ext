@@ -1,0 +1,10 @@
+{
+  "appName": {
+    "message": "AI Quiz Solve - Homework & Quiz Helper",
+    "description": "Extension name shown in Chrome Web Store and toolbar"
+  },
+  "appDescription": {
+    "message": "AI quiz solver & homework helper. Instant answers with explanations for Canvas, Blackboard, Moodle, Google Forms & 20+ platforms.",
+    "description": "132-char summary for Chrome Web Store search and category pages"
+  }
+}

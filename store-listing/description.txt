@@ -1,0 +1,92 @@
+🎓 AI Quiz Solve is a study assistant that helps you understand and answer quiz questions instantly. Double-click any question to get the answer, or hold Shift for a detailed explanation. Works on Canvas, Blackboard, Moodle, Google Forms, Brightspace (D2L), Schoology, and 20+ other quiz platforms. No sign-up required for the free tier.
+
+⚡ HOW IT WORKS
+
+1️⃣ Install the extension (no sign-up required for free tier)
+2️⃣ Press Ctrl+Shift+U (Cmd+Shift+U on Mac) to activate on any page
+3️⃣ Double-click a question to get an instant answer
+4️⃣ Shift + Double-click a question for a detailed explanation
+5️⃣ Use Screenshot Solve (Ctrl+Shift+S) for image-based or tricky questions
+
+📝 SUPPORTED QUESTION TYPES
+
+✅ Multiple Choice (MCQ)
+✅ Multiple Select (select all that apply)
+✅ True / False
+✅ Fill in the Blank
+✅ Matching
+✅ Short Answer
+✅ Essay Questions
+✅ Image and Diagram-based Questions
+
+🚀 KEY FEATURES
+
+⏱ Instant answers — responses in under 1 second
+💡 Explanation mode — understand WHY the answer is correct
+👻 Completely invisible — no floating widgets, screen-share safe
+📚 All subjects — science, math, history, code, languages & more
+
+🎯 THREE ANSWER MODES
+
+Choose how answers are delivered:
+🟢 Auto-Answer: automatically selects or fills the correct answer
+🟡 Highlight: subtly highlights the correct option on screen
+📋 Clipboard: silently copies the answer for you to paste
+
+📸 SCREENSHOT SOLVE
+
+Press Ctrl+Shift+S to capture any region of the screen. Screenshot Solve reads images, diagrams, charts, PDFs, and complex layouts that text detection cannot handle. It also activates automatically when the extension detects that answer choices are embedded in images.
+
+🎨 DRAW-TO-SOLVE
+
+Solve visual and handwritten problems by drawing directly on the screen.
+
+👁️ VISION SUPPORT
+
+AI Quiz Solve automatically detects images, diagrams, graphs, and code snippets within questions and sends them to the AI for more accurate answers. No configuration needed.
+
+🌐 WORKS ON 20+ PLATFORMS
+
+Canvas (Instructure), Blackboard, Moodle, Google Forms, Brightspace (D2L), Schoology, Quizlet, Kahoot, Quizizz, Edpuzzle, Edulastic, Chegg, Course Hero, Khan Academy, McGraw Hill Connect, Cengage, Pearson MyLab, Wiley, Socrative, ProProfs, Coursera, Udemy, edX, and more.
+
+🌍 70+ ANSWER LANGUAGES
+
+Get answers and explanations in English, Spanish, Hindi, French, Arabic, Portuguese, Chinese, Japanese, Korean, German, and 60+ other languages. Change your preferred language anytime in Settings.
+
+🛠 FREE TOOLS INCLUDED
+
+📊 GPA Calculator
+📖 Citation Generator (APA, MLA, Chicago)
+📝 Essay Word Counter
+🔍 Plagiarism Checker
+🗂 Flashcard Maker
+⏳ Exam Countdown Timer
+
+🔒 PRIVACY FOCUSED
+
+🛡️ The extension is completely inactive until you turn it on
+🛡️ We only read quiz content when you activate AI Quiz Solve
+🛡️ Your general browsing data is never collected or stored
+🛡️ The "all sites" permission is needed solely to work on any quiz platform
+
+💰 PRICING
+
+🆓 Free — 10 questions/day, all features included (no sign-up required)
+⭐ Pro — Unlimited questions starting at $6.99/month (billed yearly) or $8.99/month
+
+💬 WHY NOT JUST USE CHATGPT?
+
+Because switching tabs during a proctored exam isn't an option. AI Quiz Solve works directly inside the page. Two clicks. No trace.
+
+⌨️ KEYBOARD SHORTCUTS
+
+⚡ Ctrl+Shift+U / Cmd+Shift+U: Toggle extension on/off
+📸 Ctrl+Shift+S / Cmd+Shift+S: Screenshot Solve
+👆 Double-click: Get answer
+📖 Shift + Double-click: Get explanation
+
+💬 SUPPORT
+
+🌐 Website: https://getquizsolve.com
+📧 Email: support@getquizsolve.com
+💡 Feature Requests: https://quizsolve.canny.io/feature-requests

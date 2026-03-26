@@ -36,33 +36,29 @@
 
   // Feature flags (configurable, all off by default)
   let featureHighlight = false;
-  let featureRephrase = false;
-  let featureDrawRegion = false;
-  let featureSnapIt = false;
-  let featureNotifications = false; // off by default — stealth mode
+  let featureScreenshotSolve = true;
+  let featureNotifications = true; // on by default for better UX feedback
   let featureDblClickSolve = true;
   let modalSize = 'small'; // 'small' | 'medium' | 'large'
 
+
   chrome.storage.local.get([
-    'featureHighlight', 'featureRephrase', 'featureDrawRegion',
-    'featureSnapIt', 'featureNotifications', 'featureDblClickSolve', 'modalSize'
+    'featureHighlight',
+    'featureScreenshotSolve', 'featureNotifications', 'featureDblClickSolve', 'modalSize'
   ], (result) => {
     featureHighlight = result.featureHighlight || false;
-    featureRephrase = result.featureRephrase || false;
-    featureDrawRegion = result.featureDrawRegion || false;
-    featureSnapIt = result.featureSnapIt || false;
-    featureNotifications = result.featureNotifications || false;
+    featureScreenshotSolve = result.featureScreenshotSolve !== false;
+    featureNotifications = result.featureNotifications !== false;
     featureDblClickSolve = result.featureDblClickSolve !== false;
     modalSize = result.modalSize || 'small';
   });
 
-  chrome.storage.onChanged.addListener((changes) => {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
     if (changes.answerMode) answerMode = changes.answerMode.newValue;
     if (changes.highlightDuration) highlightDuration = changes.highlightDuration.newValue;
     if (changes.featureHighlight) featureHighlight = changes.featureHighlight.newValue;
-    if (changes.featureRephrase) featureRephrase = changes.featureRephrase.newValue;
-    if (changes.featureDrawRegion) featureDrawRegion = changes.featureDrawRegion.newValue;
-    if (changes.featureSnapIt) featureSnapIt = changes.featureSnapIt.newValue;
+    if (changes.featureScreenshotSolve) featureScreenshotSolve = changes.featureScreenshotSolve.newValue;
     if (changes.featureNotifications) featureNotifications = changes.featureNotifications.newValue;
     if (changes.featureDblClickSolve) featureDblClickSolve = changes.featureDblClickSolve.newValue !== false;
     if (changes.modalSize) modalSize = changes.modalSize.newValue;
@@ -131,15 +127,30 @@
         0%, 100% { outline-color: rgba(45, 212, 191, 0.2); }
         50% { outline-color: rgba(45, 212, 191, 0.6); }
       }
+      @keyframes qs-bounce {
+        0%, 80%, 100% { transform: scale(0); }
+        40% { transform: scale(1); }
+      }
+      .qs-toast-action {
+        background: rgba(255,255,255,0.2);
+        border: 1px solid rgba(255,255,255,0.3);
+        color: #fff;
+        padding: 2px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        margin-left: 6px;
+      }
+      .qs-toast-action:hover { background: rgba(255,255,255,0.3); }
     `;
     document.head.appendChild(style);
   }
 
   const _noop_dismiss = { dismiss() {} };
 
-  function showToast(message, type = 'info', duration = 3000) {
-    // Silent by default — only show when user enables notifications
-    if (!featureNotifications) return _noop_dismiss;
+  function showToast(message, type = 'info', duration = 3000, force = false) {
+    // Show when notifications enabled, or forced (errors always shown)
+    if (!featureNotifications && !force) return _noop_dismiss;
 
     injectToastStyles();
     // Remove existing toasts
@@ -148,7 +159,7 @@
     const el = document.createElement('div');
     el.className = `qs-toast qs-toast-${type}`;
     if (type === 'loading') {
-      el.innerHTML = `<span>${message}</span><span class="qs-toast-dots"><span></span><span></span><span></span></span>`;
+      el.innerHTML = `<span>${escapeHTML(message)}</span><span class="qs-toast-dots"><span></span><span></span><span></span></span>`;
     } else {
       el.textContent = message;
     }
@@ -172,12 +183,13 @@
   // ============================================================
 
   function withTimeout(promise, ms, message) {
+    let timerId;
     return Promise.race([
       promise,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(message || 'Request timed out')), ms)
-      )
-    ]);
+      new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error(message || 'Request timed out')), ms);
+      })
+    ]).finally(() => clearTimeout(timerId));
   }
 
   // ============================================================
@@ -195,10 +207,22 @@
       isActive = message.active;
       devLog('State toggled:', isActive ? 'ACTIVE' : 'INACTIVE');
       sendResponse({ ok: true });
+    } else if (message.type === 'PING') {
+      sendResponse({ ok: true });
+    } else if (message.type === 'START_SCREENSHOT_SOLVE') {
+      if (!isActive) {
+        devLog('Screenshot Solve: extension is inactive, ignoring');
+        sendResponse({ ok: false });
+        return;
+      }
+      devLog('Screenshot Solve: starting region selection');
+      startDrawRegion();
+      sendResponse({ ok: true });
     }
   });
 
   chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
+    if (chrome.runtime.lastError) { devWarn('GET_STATE error:', chrome.runtime.lastError.message); return; }
     if (response) {
       isActive = response.active;
       devLog('Initial state:', isActive ? 'ACTIVE' : 'INACTIVE');
@@ -1291,6 +1315,7 @@
       matchItems: optionData.matchItems?.map(m => ({ text: m.text, identifier: m.identifier, selectOptions: m.selectOptions })),
       images,
       platform,
+      pageUrl: location.href,
       _domRefs: {
         container,
         options: optionData.options,
@@ -1694,7 +1719,8 @@
       'options:', options?.length || 0);
 
     if (answerMode === 'clipboard') {
-      navigator.clipboard.writeText(answer).catch(() => { });
+      navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+      showToast('Answer copied to clipboard', 'success');
       devLog('Answer copied to clipboard');
       return;
     }
@@ -1706,7 +1732,8 @@
         if (!matched) {
           devWarn('No matching option found for answer:', answer,
             'available:', options.map(o => `${o.identifier}="${o.text?.substring(0, 25)}"`));
-          navigator.clipboard.writeText(answer).catch(() => { });
+          navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+          showToast('Could not auto-apply — answer copied to clipboard', 'info');
           return;
         }
         devLog('Matched option:', matched.identifier, '"' + matched.text?.substring(0, 40) + '"',
@@ -1753,7 +1780,8 @@
         });
         if (!anyMatched) {
           devWarn('No multi-select options matched:', selectedIds);
-          navigator.clipboard.writeText(answer).catch(() => { });
+          navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+          showToast('Could not auto-apply — answer copied to clipboard', 'info');
         }
         break;
       }
@@ -1761,7 +1789,8 @@
       case 'MATCHING': {
         if (!matchItems || matchItems.length === 0) {
           devWarn('No match items for MATCHING type');
-          navigator.clipboard.writeText(answer).catch(() => { });
+          navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+          showToast('Could not auto-apply — answer copied to clipboard', 'info');
           return;
         }
         const pairs = answer.split(',').map(s => s.trim());
@@ -1813,21 +1842,25 @@
                 devLog('Fallback text input filled');
               }
             } else {
-              navigator.clipboard.writeText(answer).catch(() => { });
+              navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+              showToast('Could not auto-apply — answer copied to clipboard', 'info');
               devLog('No input found, copied to clipboard');
             }
           } else {
-            navigator.clipboard.writeText(answer).catch(() => { });
+            navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+            showToast('Could not auto-apply — answer copied to clipboard', 'info');
           }
         } else {
-          navigator.clipboard.writeText(answer).catch(() => { });
+          navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+          showToast('Could not auto-apply — answer copied to clipboard', 'info');
         }
         break;
       }
 
       default:
         devWarn('Unknown question type:', type);
-        navigator.clipboard.writeText(answer).catch(() => { });
+        navigator.clipboard.writeText(answer).catch(() => { showToast('Clipboard write failed — copy manually', 'error', 3000, true); });
+        showToast('Could not auto-apply — answer copied to clipboard', 'info');
     }
   }
 
@@ -1837,6 +1870,7 @@
   // ============================================================
 
   let explanationModalElement = null;
+  let modalAbortController = null;
 
   function injectExplanationStyles() {
     if (document.getElementById('qs-explanation-styles')) return;
@@ -2065,7 +2099,7 @@
     return div.innerHTML;
   }
 
-  function showExplanationModal(questionText) {
+  function showExplanationModal(questionText, title = 'Explanation') {
     injectExplanationStyles();
 
     if (explanationModalElement) explanationModalElement.remove();
@@ -2077,7 +2111,7 @@
       <div class="qs-modal ${sizeClass}">
         <div class="qs-modal-header">
           <div class="qs-modal-title">
-            Explanation
+            ${title}
             <span class="qs-modal-badge">AI</span>
           </div>
           <button class="qs-modal-close" data-qs-close>&times;</button>
@@ -2103,9 +2137,13 @@
             <div class="qs-modal-explanation" id="qs-explanation-text" style="display:none"></div>
             <div class="qs-modal-error" id="qs-explanation-error" style="display:none"></div>
           </div>
+          <div class="qs-modal-section" id="qs-reasoning-section" style="display:none">
+            <div class="qs-modal-label">Step-by-Step</div>
+            <div class="qs-modal-explanation" id="qs-reasoning-text"></div>
+          </div>
         </div>
-        <div class="qs-modal-footer">
-          <button class="qs-modal-btn qs-modal-btn-secondary" data-qs-close>Close</button>
+        <div class="qs-modal-footer" id="qs-modal-footer" style="display:none">
+          <button class="qs-modal-btn qs-modal-btn-secondary" id="qs-copy-btn" style="display:none">Copy Answer</button>
           <button class="qs-modal-btn qs-modal-btn-primary" id="qs-apply-btn" style="display:none">Apply Answer</button>
         </div>
       </div>
@@ -2120,10 +2158,6 @@
     overlay.querySelectorAll('[data-qs-close]').forEach(btn => {
       btn.addEventListener('click', () => hideExplanationModal());
     });
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) hideExplanationModal();
-    });
-
     makeModalDraggable(overlay);
     return overlay;
   }
@@ -2132,6 +2166,11 @@
     const modal = overlay.querySelector('.qs-modal');
     const header = overlay.querySelector('.qs-modal-header');
     if (!modal || !header) return;
+
+    // Abort any previous drag listeners before creating new ones
+    if (modalAbortController) modalAbortController.abort();
+    modalAbortController = new AbortController();
+    const { signal } = modalAbortController;
 
     let isDragging = false;
     let startX, startY, startLeft, startTop;
@@ -2156,7 +2195,7 @@
       overlay.style.justifyContent = 'flex-start';
 
       e.preventDefault();
-    });
+    }, { signal });
 
     const onMove = (e) => {
       if (!isDragging) return;
@@ -2173,8 +2212,8 @@
       }
     };
 
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    document.addEventListener('mousemove', onMove, { signal });
+    document.addEventListener('mouseup', onUp, { signal });
   }
 
   function formatExplanationText(text) {
@@ -2209,7 +2248,7 @@
     return html;
   }
 
-  function updateExplanationModal(answer, explanation, domRefs, options) {
+  function updateExplanationModal(answer, explanation, domRefs, options, reasoning, answerOption) {
     if (!explanationModalElement) return;
 
     const answerSection = explanationModalElement.querySelector('#qs-answer-section');
@@ -2218,6 +2257,8 @@
     const loading = explanationModalElement.querySelector('#qs-loading');
     const explanationText = explanationModalElement.querySelector('#qs-explanation-text');
     const applyBtn = explanationModalElement.querySelector('#qs-apply-btn');
+    const reasoningSection = explanationModalElement.querySelector('#qs-reasoning-section');
+    const reasoningText = explanationModalElement.querySelector('#qs-reasoning-text');
 
     if (loading) loading.style.display = 'none';
 
@@ -2225,7 +2266,11 @@
     if (answer && answerSection && answerLetter) {
       let displayLetter = answer;
       let displayText = '';
-      if (options && options.length > 0) {
+      // Use answerOption directly when available from backend
+      if (answerOption && answerOption.identifier) {
+        displayLetter = answerOption.identifier;
+        displayText = answerOption.text || '';
+      } else if (options && options.length > 0) {
         const matched = findMatchingOption(options.map(o => ({ text: o.text, identifier: o.identifier, value: o.value })), answer);
         if (matched) {
           displayLetter = matched.identifier;
@@ -2242,29 +2287,80 @@
       explanationText.style.display = '';
     }
 
-    // Show Apply button only when there's an answer to apply
+    // If no explanation, show reasoning in the explanation section instead
+    if (!explanation && reasoning && explanationText) {
+      explanationText.innerHTML = formatExplanationText(reasoning);
+      explanationText.style.display = '';
+    } else if (reasoningSection && reasoningText && reasoning) {
+      // Show reasoning as a separate section when explanation is also present
+      reasoningText.innerHTML = formatExplanationText(reasoning);
+      reasoningSection.style.display = '';
+    }
+
+    // Footer action buttons — only show footer when at least one button is visible
+    const footer = explanationModalElement.querySelector('#qs-modal-footer');
+    const copyBtn = explanationModalElement.querySelector('#qs-copy-btn');
+    let hasFooterBtn = false;
+
+    // Copy Answer button — shown when there's an answer
+    if (copyBtn && answer) {
+      const copyText = answerOption?.text
+        ? `${answerOption.identifier || answer}: ${answerOption.text}`
+        : answer;
+      let copyResetTimer = null;
+      copyBtn.style.display = '';
+      hasFooterBtn = true;
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(copyText).then(() => {
+          copyBtn.textContent = 'Copied!';
+          clearTimeout(copyResetTimer);
+          copyResetTimer = setTimeout(() => { copyBtn.textContent = 'Copy Answer'; }, 1500);
+        }).catch(() => {
+          showToast('Clipboard write failed — copy manually', 'error', 3000, true);
+        });
+      };
+    }
+
+    // Apply Answer button — shown when DOM references are available
     if (applyBtn && domRefs && answer) {
       applyBtn.style.display = '';
-      applyBtn.addEventListener('click', () => {
+      hasFooterBtn = true;
+      applyBtn.onclick = () => {
         applyAnswer(domRefs, answer);
+        try { window.getSelection()?.removeAllRanges(); } catch (_) {}
         hideExplanationModal();
-      });
+      };
     }
+
+    if (footer && hasFooterBtn) footer.style.display = '';
   }
 
-  function showExplanationError(errorMsg) {
+  function showExplanationError(errorMsg, showSnapIt = false) {
     if (!explanationModalElement) return;
     const loading = explanationModalElement.querySelector('#qs-loading');
     const errorEl = explanationModalElement.querySelector('#qs-explanation-error');
     if (loading) loading.style.display = 'none';
     if (errorEl) {
-      errorEl.textContent = errorMsg;
+      if (showSnapIt && featureScreenshotSolve) {
+        errorEl.innerHTML = escapeHTML(errorMsg) +
+          ' <button class="qs-toast-action" id="qs-snapit-btn">Use Snap It</button>';
+        errorEl.querySelector('#qs-snapit-btn')?.addEventListener('click', () => {
+          hideExplanationModal();
+          chrome.runtime.sendMessage({ type: 'TRIGGER_SCREENSHOT_SOLVE' });
+        });
+      } else {
+        errorEl.textContent = errorMsg;
+      }
       errorEl.style.display = '';
     }
   }
 
   function hideExplanationModal() {
     if (!explanationModalElement) return;
+    if (modalAbortController) {
+      modalAbortController.abort();
+      modalAbortController = null;
+    }
     explanationModalElement.classList.remove('qs-visible');
     setTimeout(() => {
       explanationModalElement?.remove();
@@ -2273,7 +2369,7 @@
   }
 
   // ============================================================
-  // SELECTION TOOLBAR (Highlight → Solve / Explain / Rephrase)
+  // SELECTION TOOLBAR (Highlight → Solve / Explain)
   // ============================================================
 
   let selToolbar = null;
@@ -2348,10 +2444,6 @@
       btns.push(`<span class="qs-sel-div"></span>`);
       btns.push(`<button class="qs-sel-btn" data-action="explain"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Explain</button>`);
     }
-    if (featureRephrase) {
-      if (btns.length > 0) btns.push(`<span class="qs-sel-div"></span>`);
-      btns.push(`<button class="qs-sel-btn" data-action="rephrase"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>Rephrase</button>`);
-    }
     if (btns.length === 0) return;
 
     tb.innerHTML = btns.join('');
@@ -2405,24 +2497,6 @@
     devLog('Selection action:', action, 'text:', text.substring(0, 60));
 
     try {
-      if (action === 'rephrase') {
-        const modal = showRephraseModal(text);
-        try {
-          const result = await new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage(
-              { type: 'PROCESS_REPHRASE', data: { text } },
-              (resp) => {
-                if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                if (resp.success) resolve(resp.result);
-                else reject(new Error(resp.error));
-              }
-            );
-          });
-          updateRephraseModal(result);
-        } catch (err) {
-          showRephraseError(err.message);
-        }
-      } else {
         // Solve or Explain — try to find question context near the selection
         const sel = window.getSelection();
         const anchor = sel?.anchorNode?.parentElement || document.body;
@@ -2440,6 +2514,7 @@
             options: [],
             images: [],
             platform: detectPlatform(),
+            pageUrl: location.href,
           };
 
           const modal = showExplanationModal(text);
@@ -2450,13 +2525,14 @@
                 { type: msgType, data: fallbackContext },
                 (r) => {
                   if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  if (!r) { reject(new Error('No response from background')); return; }
                   if (r.success) resolve(r);
                   else reject(new Error(r.error));
                 }
               );
             });
-            updateExplanationModal(resp.answer, resp.explanation, null, []);
-          } catch (err) { showExplanationError(err.message); }
+            updateExplanationModal(resp.answer, resp.explanation, null, [], resp.reasoning, resp.answerOption);
+          } catch (err) { showExplanationError(err.message, err.message.includes('NO_OPTIONS_EXTRACTED')); }
         } else {
           const domRefs = context._domRefs;
           delete context._domRefs;
@@ -2469,15 +2545,15 @@
                 { type: msgType, data: context },
                 (r) => {
                   if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  if (!r) { reject(new Error('No response from background')); return; }
                   if (r.success) resolve(r);
                   else reject(new Error(r.error));
                 }
               );
             });
-            updateExplanationModal(resp.answer, resp.explanation, domRefs, context.options);
-          } catch (err) { showExplanationError(err.message); }
+            updateExplanationModal(resp.answer, resp.explanation, domRefs, context.options, resp.reasoning, resp.answerOption);
+          } catch (err) { showExplanationError(err.message, err.message.includes('NO_OPTIONS_EXTRACTED')); }
         }
-      }
     } catch (err) {
       devError('Selection action error:', err.message);
     } finally {
@@ -2485,79 +2561,10 @@
     }
   }
 
-  // Rephrase modal (reuses base modal styles)
-  function showRephraseModal(originalText) {
-    injectExplanationStyles();
-    if (explanationModalElement) explanationModalElement.remove();
-
-    const sizeClass = modalSize === 'large' ? 'qs-modal-lg' : modalSize === 'medium' ? 'qs-modal-md' : '';
-    const overlay = document.createElement('div');
-    overlay.className = 'qs-modal-overlay';
-    overlay.innerHTML = `
-      <div class="qs-modal ${sizeClass}">
-        <div class="qs-modal-header">
-          <div class="qs-modal-title">Rephrase <span class="qs-modal-badge">AI</span></div>
-          <button class="qs-modal-close" data-qs-close>&times;</button>
-        </div>
-        <div class="qs-modal-body">
-          <div class="qs-modal-section">
-            <div class="qs-modal-label">Original</div>
-            <div class="qs-modal-question">${escapeHTML(originalText.substring(0, 500))}</div>
-          </div>
-          <div class="qs-modal-section">
-            <div class="qs-modal-label">Rephrased</div>
-            <div class="qs-loading-container" id="qs-loading">
-              <div class="qs-loading-dots"><span></span><span></span><span></span></div>
-              <div class="qs-loading-text">Rephrasing...</div>
-            </div>
-            <div class="qs-modal-explanation" id="qs-rephrase-result" style="display:none"></div>
-            <div class="qs-modal-error" id="qs-rephrase-error" style="display:none"></div>
-          </div>
-        </div>
-        <div class="qs-modal-footer">
-          <button class="qs-modal-btn qs-modal-btn-secondary" data-qs-close>Close</button>
-          <button class="qs-modal-btn qs-modal-btn-primary" id="qs-copy-btn" style="display:none">Copy</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    explanationModalElement = overlay;
-    requestAnimationFrame(() => overlay.classList.add('qs-visible'));
-    overlay.querySelectorAll('[data-qs-close]').forEach(b => b.addEventListener('click', hideExplanationModal));
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) hideExplanationModal(); });
-    makeModalDraggable(overlay);
-    return overlay;
-  }
-
-  function updateRephraseModal(result) {
-    if (!explanationModalElement) return;
-    const loading = explanationModalElement.querySelector('#qs-loading');
-    const resultEl = explanationModalElement.querySelector('#qs-rephrase-result');
-    const copyBtn = explanationModalElement.querySelector('#qs-copy-btn');
-    if (loading) loading.style.display = 'none';
-    if (resultEl) { resultEl.textContent = result; resultEl.style.display = ''; }
-    if (copyBtn) {
-      copyBtn.style.display = '';
-      copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(result).catch(() => { });
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-      });
-    }
-  }
-
-  function showRephraseError(msg) {
-    if (!explanationModalElement) return;
-    const loading = explanationModalElement.querySelector('#qs-loading');
-    const errEl = explanationModalElement.querySelector('#qs-rephrase-error');
-    if (loading) loading.style.display = 'none';
-    if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
-  }
-
   // Selection listeners
   document.addEventListener('mouseup', (e) => {
     if (!isActive) return;
-    if (!featureHighlight && !featureRephrase) return;
+    if (!featureHighlight) return;
     if (e.target.closest('.qs-modal-overlay, .qs-sel-toolbar, .qs-draw-overlay')) return;
 
     clearTimeout(selTimeout);
@@ -2631,7 +2638,7 @@
   }
 
   function startDrawRegion() {
-    if (!featureDrawRegion || drawOverlay) return;
+    if (drawOverlay) return;
     injectDrawStyles();
     devLog('Draw region started');
 
@@ -2681,6 +2688,7 @@
       hint.remove();
       rectEl.remove();
       drawOverlay = null;
+      document.removeEventListener('mousemove', onMove);
       document.removeEventListener('keydown', onKey);
     };
 
@@ -2708,82 +2716,266 @@
   }
 
   // ============================================================
-  // SNAP IT (Screen capture → Solve)
+  // REGION → DOM REFS — Find interactive elements within screenshot region
   // ============================================================
 
-  async function snapIt() {
-    if (!featureSnapIt) return;
-    devLog('Snap it triggered');
-    await captureAndProcess(null); // null = full viewport
+  function tryBuildDomRefsFromRegion(region) {
+    try {
+      // Expand region slightly to catch elements partially outside the drawn box
+      const pad = 20;
+      const regionRect = {
+        left: region.x - pad,
+        top: region.y - pad,
+        right: region.x + region.width + pad,
+        bottom: region.y + region.height + pad,
+      };
+
+      // Find the best question container that overlaps the region
+      // Check center and corners of the region for elements
+      const margin = Math.min(10, region.width / 4, region.height / 4);
+      const probePoints = [
+        [region.x + region.width / 2, region.y + region.height / 2],
+        [region.x + margin, region.y + margin],
+        [region.x + region.width - margin, region.y + region.height - margin],
+      ];
+
+      let bestContainer = null;
+      for (const [px, py] of probePoints) {
+        const el = document.elementFromPoint(px, py);
+        if (!el || el === document.body || el === document.documentElement) continue;
+        const container = findQuestionContainer(el);
+        if (container) {
+          bestContainer = container;
+          break;
+        }
+      }
+
+      if (!bestContainer) {
+        devLog('Screenshot apply: no question container found in region');
+        return null;
+      }
+
+      // Verify the container overlaps with the screenshot region
+      const containerRect = bestContainer.getBoundingClientRect();
+      const overlaps =
+        containerRect.left < regionRect.right &&
+        containerRect.right > regionRect.left &&
+        containerRect.top < regionRect.bottom &&
+        containerRect.bottom > regionRect.top;
+
+      if (!overlaps) {
+        devLog('Screenshot apply: container does not overlap region');
+        return null;
+      }
+
+      const optionData = extractOptionsAndType(bestContainer);
+      if (!optionData || !optionData.options || optionData.options.length < 2) {
+        devLog('Screenshot apply: not enough options found in container');
+        return null;
+      }
+
+      // Verify at least some options are within the region
+      let optionsInRegion = 0;
+      for (const opt of optionData.options) {
+        const optRect = opt.element.getBoundingClientRect();
+        if (
+          optRect.left < regionRect.right &&
+          optRect.right > regionRect.left &&
+          optRect.top < regionRect.bottom &&
+          optRect.bottom > regionRect.top
+        ) {
+          optionsInRegion++;
+        }
+      }
+
+      if (optionsInRegion < 2) {
+        devLog('Screenshot apply: only', optionsInRegion, 'options overlap region');
+        return null;
+      }
+
+      devLog('Screenshot apply: found', optionData.options.length, 'options, type:', optionData.type);
+      return {
+        type: optionData.type,
+        options: optionData.options,
+        matchItems: optionData.matchItems,
+        inputElement: optionData.inputElement,
+        isDropdown: optionData.isDropdown,
+        container: bestContainer,
+      };
+    } catch (err) {
+      devWarn('Screenshot apply: failed to build domRefs:', err.message);
+      return null;
+    }
   }
+
+  // ============================================================
+  // DRAW REGION — Capture + Crop + Solve (content-driven)
+  // SNAP IT is handled entirely by background.js via messages:
+  //   SNAP_IT_LOADING → SNAP_IT_RESULT / SNAP_IT_ERROR
+  // ============================================================
 
   async function captureAndProcess(region) {
     if (processing) return;
     processing = true;
 
-    // Show loading modal immediately
-    const modal = showExplanationModal(region
-      ? 'Analyzing selected region...'
-      : 'Analyzing screen capture...');
+    const modal = showExplanationModal('Analyzing selected region...', 'Snap It');
     if (!modal) { processing = false; return; }
 
+    const requestTimeout = 45000;
+
     try {
-      // Request screenshot from background
-      const screenshot = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ type: 'CAPTURE_TAB' }, (resp) => {
-          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-          if (resp?.success) resolve(resp.dataUrl);
-          else reject(new Error(resp?.error || 'Capture failed'));
-        });
+      const screenshot = await withTimeout(
+        new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({ type: 'CAPTURE_TAB' }, (resp) => {
+            if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+            if (!resp) { reject(new Error('No response from background')); return; }
+            if (resp.success) resolve(resp.dataUrl);
+            else reject(new Error(resp.error || 'Capture failed'));
+          });
+        }),
+        10000,
+        'Screenshot capture timed out. Please try again.'
+      );
+
+      const dpr = window.devicePixelRatio || 1;
+      const imageData = await cropImage(screenshot, {
+        x: region.x * dpr,
+        y: region.y * dpr,
+        width: region.width * dpr,
+        height: region.height * dpr,
       });
 
-      // Crop if region specified
-      let imageData;
-      if (region) {
-        const dpr = window.devicePixelRatio || 1;
-        imageData = await cropImage(screenshot, {
-          x: region.x * dpr,
-          y: region.y * dpr,
-          width: region.width * dpr,
-          height: region.height * dpr,
-        });
-      } else {
-        // Use full screenshot
-        const base64 = screenshot.split(',')[1];
-        const mimeType = screenshot.split(';')[0].split(':')[1];
-        imageData = { data: base64, mimeType };
+      const resp = await withTimeout(
+        new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage(
+            {
+              type: 'PROCESS_SCREENSHOT',
+              data: {
+                image: imageData,
+                metadata: {
+                  quizPlatform: detectPlatform(),
+                  pageUrl: location.href,
+                },
+              },
+            },
+            (r) => {
+              if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+              if (!r) { reject(new Error('No response from background')); return; }
+              if (r.success) resolve(r);
+              else reject(new Error(r.error || 'Processing failed'));
+            }
+          );
+        }),
+        requestTimeout,
+        `Request timed out after ${requestTimeout / 1000} seconds. Please try again.`
+      );
+
+      if (resp.question) {
+        const questionEl = explanationModalElement?.querySelector('.qs-modal-question');
+        if (questionEl) questionEl.textContent = resp.question;
       }
 
-      // Send to AI for explanation
-      const context = {
-        questionText: '[The question is in the attached image. Analyze the image to determine the question, identify the options if any, and provide the correct answer.]',
-        type: 'MULTIPLE_CHOICE',
-        baseType: 'MULTIPLE_CHOICE',
-        isNegation: false,
-        instructions: '',
-        options: [],
-        images: [imageData],
-        platform: detectPlatform(),
-      };
-
-      const resp = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage(
-          { type: 'PROCESS_SOLVE', data: context },
-          (r) => {
-            if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-            if (r.success) resolve(r);
-            else reject(new Error(r.error));
-          }
-        );
-      });
-
-      updateExplanationModal(resp.answer, resp.explanation, null, []);
+      // Try to find matching DOM elements in the screenshot region for auto-apply
+      // Temporarily hide modal so elementFromPoint can reach the page underneath
+      let domRefs = null;
+      if (resp.answer && explanationModalElement) {
+        explanationModalElement.style.pointerEvents = 'none';
+        explanationModalElement.style.visibility = 'hidden';
+        domRefs = tryBuildDomRefsFromRegion(region);
+        explanationModalElement.style.pointerEvents = '';
+        explanationModalElement.style.visibility = '';
+      } else if (resp.answer) {
+        domRefs = tryBuildDomRefsFromRegion(region);
+      }
+      updateExplanationModal(resp.answer, resp.explanation, domRefs, resp.options || [], resp.reasoning, resp.answerOption);
+      chrome.storage.local.set({ hasUsedScreenshotSolve: true });
     } catch (err) {
-      devError('Capture error:', err.message);
+      devError('Draw region error:', err.message);
       showExplanationError('Capture failed: ' + err.message);
     } finally {
       processing = false;
     }
+  }
+
+  // ============================================================
+  // AUTO-SCREENSHOT FALLBACK
+  // When text-based solve fails (NO_OPTIONS_EXTRACTED), auto-capture
+  // the question container and solve via vision API.
+  // ============================================================
+
+  async function autoScreenshotFallback(container) {
+    const rect = container.getBoundingClientRect();
+
+    // Skip if container is too small to be meaningful
+    if (rect.width < 20 || rect.height < 20) {
+      throw new Error('Container too small for screenshot fallback');
+    }
+
+    // Clamp to visible viewport
+    const region = {
+      x: Math.max(0, rect.left),
+      y: Math.max(0, rect.top),
+      width: Math.min(rect.right, window.innerWidth) - Math.max(0, rect.left),
+      height: Math.min(rect.bottom, window.innerHeight) - Math.max(0, rect.top),
+    };
+
+    if (region.width < 20 || region.height < 20) {
+      throw new Error('Visible container area too small for screenshot');
+    }
+
+    // Capture the tab
+    const screenshot = await withTimeout(
+      new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ type: 'CAPTURE_TAB' }, (resp) => {
+          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+          if (!resp) { reject(new Error('No response from background')); return; }
+          if (resp.success) resolve(resp.dataUrl);
+          else reject(new Error(resp.error || 'Capture failed'));
+        });
+      }),
+      10000,
+      'Screenshot capture timed out.'
+    );
+
+    // Crop to container bounds
+    const dpr = window.devicePixelRatio || 1;
+    const imageData = await cropImage(screenshot, {
+      x: region.x * dpr,
+      y: region.y * dpr,
+      width: region.width * dpr,
+      height: region.height * dpr,
+    });
+
+    // Send to screenshot API
+    const resp = await withTimeout(
+      new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          {
+            type: 'PROCESS_SCREENSHOT',
+            data: {
+              image: imageData,
+              metadata: {
+                quizPlatform: detectPlatform(),
+                pageUrl: location.href,
+              },
+            },
+          },
+          (r) => {
+            if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+            if (!r) { reject(new Error('No response from background')); return; }
+            if (r.success) resolve(r);
+            else reject(new Error(r.error || 'Screenshot processing failed'));
+          }
+        );
+      }),
+      45000,
+      'Screenshot processing timed out.'
+    );
+
+    // Try to build DOM refs for auto-apply
+    const domRefs = tryBuildDomRefsFromRegion(region);
+
+    return { resp, domRefs, region };
   }
 
   function cropImage(dataUrl, region) {
@@ -2807,38 +2999,15 @@
   }
 
   // ============================================================
-  // KEYBOARD SHORTCUTS (Draw/Snap + Escape)
+  // KEYBOARD SHORTCUTS (Draw + Escape)
+  // Note: Snap It shortcut is handled via chrome.commands API
+  // (manifest.json → background.js → SNAP_IT message)
   // ============================================================
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (explanationModalElement) hideExplanationModal();
       if (drawOverlay) { drawOverlay.remove(); drawOverlay = null; }
-      return;
     }
-
-    // Check for Ctrl (Win/Linux) or Cmd (Mac)
-    const modKey = e.ctrlKey || e.metaKey;
-
-    // Ctrl/Cmd+Shift+D → Draw region (works when feature is enabled, independent of isActive)
-    if (modKey && e.shiftKey && e.key === 'D') {
-      if (featureDrawRegion) {
-        e.preventDefault();
-        startDrawRegion();
-      }
-      return;
-    }
-
-    // Ctrl/Cmd+Shift+S → Snap it (works when feature is enabled, independent of isActive)
-    if (modKey && e.shiftKey && e.key === 'S') {
-      if (featureSnapIt) {
-        e.preventDefault();
-        snapIt();
-      }
-      return;
-    }
-
-    if (!isActive) return;
   });
 
   // ============================================================
@@ -2908,6 +3077,33 @@
       const context = await extractQuestionContext(resolvedTarget);
       if (!context) {
         devWarn('No question context found — took', Date.now() - startTime, 'ms');
+
+        // Auto-fallback: try screenshot solve if we can find a container
+        if (featureScreenshotSolve) {
+          const fallbackContainer = findQuestionContainer(resolvedTarget);
+          if (fallbackContainer) {
+            try {
+              showToast('No text detected. Trying screenshot...', 'loading');
+              const fallback = await autoScreenshotFallback(fallbackContainer);
+              document.querySelectorAll('.qs-toast').forEach(t => t.remove());
+              if (fallback.resp.answer) {
+                applyAnswer(fallback.domRefs, fallback.resp.answer);
+                showToast('Answer applied via screenshot', 'success', 2000);
+                chrome.storage.local.set({ hasUsedScreenshotSolve: true });
+              } else {
+                showToast('Could not determine the answer. Try Snap It manually.', 'error', 4000, true);
+              }
+            } catch (fallbackErr) {
+              devWarn('Null-context screenshot fallback failed:', fallbackErr.message);
+              document.querySelectorAll('.qs-toast').forEach(t => t.remove());
+              showToast('No question detected. Try clicking directly on a question.', 'error', 3000);
+            } finally {
+              processing = false;
+            }
+            return;
+          }
+        }
+
         showToast('No question detected. Try clicking directly on a question.', 'error', 3000);
         processing = false;
         return;
@@ -2949,6 +3145,7 @@
                 { type: 'PROCESS_EXPLANATION', data: context },
                 (resp) => {
                   if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  if (!resp) { reject(new Error('No response from background')); return; }
                   if (resp.success) resolve(resp);
                   else reject(new Error(resp.error));
                 }
@@ -2959,10 +3156,10 @@
           );
 
           devLog('Explanation received — total time:', Date.now() - startTime, 'ms');
-          updateExplanationModal(response.answer, response.explanation, domRefs, context.options);
+          updateExplanationModal(response.answer, response.explanation, domRefs, context.options, response.reasoning, response.answerOption);
         } catch (err) {
           devError('Explanation error:', err.message);
-          showExplanationError('Failed to get explanation: ' + err.message);
+          showExplanationError('Failed to get explanation: ' + err.message, err.message.includes('NO_OPTIONS_EXTRACTED'));
         }
       } else {
         // --- Normal Mode: auto-answer ---
@@ -2973,6 +3170,7 @@
               { type: 'PROCESS_QUESTION', data: context },
               (resp) => {
                 if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                if (!resp) { reject(new Error('No response from background')); return; }
                 if (resp.success) resolve(resp.answer);
                 else reject(new Error(resp.error));
               }
@@ -2986,7 +3184,37 @@
         if (loadingToast) loadingToast.dismiss();
         loadingToast = null;
         applyAnswer(domRefs, response);
+        try { window.getSelection()?.removeAllRanges(); } catch (_) {}
         showToast('Answer applied', 'success', 2000);
+
+        // Low-confidence nudge: suggest screenshot solve when answer seems uncertain
+        let lowConfidenceNudgeFired = false;
+        if (featureScreenshotSolve) {
+          const answerStr = (typeof response === 'string' ? response : '').trim().toUpperCase();
+          const optionIds = (context.options || []).map(o => (o.identifier || '').trim().toUpperCase()).filter(Boolean);
+          const hasImages = (context.images || []).length > 0;
+          // Check if the answer contains any recognized option identifier (handles "A", "The answer is C", etc.)
+          const answerContainsOption = optionIds.length > 0 && optionIds.some(id => answerStr.includes(id));
+          // Only nudge when answer doesn't reference any option AND question had embedded images
+          if (!answerContainsOption && hasImages && optionIds.length > 0) {
+            lowConfidenceNudgeFired = true;
+            setTimeout(() => {
+              showToast('Not sure about the answer? Try Ctrl+Shift+S for screenshot solve', 'info', 4000, true);
+            }, 2500);
+          }
+        }
+
+
+
+        // Show warning when approaching daily limit
+        chrome.storage.local.get(['rateLimits'], (data) => {
+          const remaining = data.rateLimits?.remaining?.day;
+          if (remaining !== undefined && remaining <= 5 && remaining > 0) {
+            setTimeout(() => {
+              showToast(`${remaining} free question${remaining === 1 ? '' : 's'} left today`, 'info', 3000, true);
+            }, 2200);
+          }
+        });
       }
     } catch (err) {
       devError('Error processing question:', err.message);
@@ -2996,19 +3224,71 @@
       // 1f. Categorized error messages
       let userMessage = 'Something went wrong. Please try again.';
       const msg = err.message || '';
-      if (msg.includes('timed out')) {
-        userMessage = 'Request timed out. Please try again.';
-      } else if (msg.includes('Rate limit') || msg.includes('429')) {
-        userMessage = 'Rate limit reached. Please wait a moment.';
+      if (msg.includes('Screenshot daily limit') || msg.includes('free screenshot')) {
+        userMessage = 'Screenshot daily limit reached. Upgrade to Pro for unlimited screenshots.';
+      } else if (msg.includes('Daily limit') || msg.includes('free questions')) {
+        userMessage = 'Daily limit reached. Upgrade to Pro for unlimited questions.';
+      } else if (msg.includes('timed out') || msg.includes('Request timeout')) {
+        userMessage = 'Request timed out. Our server may be busy — try again in a few seconds.';
+      } else if (msg.includes('Rate limit') || msg.includes('Too many requests')) {
+        userMessage = 'Too many requests. Wait a moment and try again.';
+      } else if (msg.includes('AI service') || msg.includes('temporarily unavailable')) {
+        userMessage = 'AI service temporarily unavailable. Please try again in a moment.';
       } else if (msg.includes('Network') || msg.includes('Failed to fetch') || msg.includes('net::')) {
-        userMessage = 'Network error. Check your internet connection.';
+        userMessage = 'Cannot reach our server. Check your internet connection and try again.';
       } else if (msg.includes('API key') || msg.includes('No API key')) {
         userMessage = 'API key not configured. Open extension settings.';
+      } else if (msg.includes('NO_OPTIONS_EXTRACTED')) {
+        userMessage = 'No options found. Use Snap It or select the full question with answer choices.';
+      } else if (msg.includes('No question') || msg.includes('not detected')) {
+        userMessage = 'No question found here. Try double-clicking directly on the question text.';
       } else if (msg.includes('disconnected') || msg.includes('Extension context invalidated') || msg.includes('Receiving end does not exist')) {
-        userMessage = 'Extension disconnected. Reload the page.';
+        userMessage = 'Extension reloaded. Please refresh this page.';
+      } else if (msg.includes('Session expired') || msg.includes('401')) {
+        userMessage = 'Session expired. Open the extension popup and log in again.';
       }
 
-      showToast(userMessage, 'error', 4000);
+      // Auto-fallback: when NO_OPTIONS_EXTRACTED and we have a container, try screenshot solve automatically
+      if (msg.includes('NO_OPTIONS_EXTRACTED') && featureScreenshotSolve && processingContainer) {
+        try {
+          showToast('Trying screenshot solve...', 'loading');
+          const fallback = await autoScreenshotFallback(processingContainer);
+          document.querySelectorAll('.qs-toast').forEach(t => t.remove());
+
+          if (fallback.resp.answer) {
+            applyAnswer(fallback.domRefs, fallback.resp.answer);
+            showToast('Answer applied via screenshot', 'success', 2000);
+            chrome.storage.local.set({ hasUsedScreenshotSolve: true });
+          } else {
+            showToast('Screenshot solve returned no answer. Try Snap It manually.', 'error', 4000, true);
+          }
+          return; // success — skip normal error display
+        } catch (fallbackErr) {
+          devWarn('Auto-screenshot fallback failed:', fallbackErr.message);
+          document.querySelectorAll('.qs-toast').forEach(t => t.remove());
+          // Fall through to show original error + Snap It button
+          if (fallbackErr.message.includes('SCREENSHOT_LIMIT_REACHED')) {
+            userMessage = 'Screenshot daily limit reached. Upgrade to Pro for unlimited screenshots.';
+          }
+        }
+      }
+
+      // Always force-show error toasts even if notifications are off
+      showToast(userMessage, 'error', 4000, true);
+
+      // Show Snap It button for NO_OPTIONS_EXTRACTED if auto-fallback didn't fire or failed
+      if (msg.includes('NO_OPTIONS_EXTRACTED') && featureScreenshotSolve) {
+        document.querySelectorAll('.qs-toast').forEach(t => t.remove());
+        const el = document.createElement('div');
+        el.className = 'qs-toast qs-toast-error qs-toast-visible';
+        el.innerHTML = `<span>No options found.</span> <button class="qs-toast-action">Use Snap It</button>`;
+        el.querySelector('.qs-toast-action').addEventListener('click', () => {
+          el.remove();
+          chrome.runtime.sendMessage({ type: 'TRIGGER_SCREENSHOT_SOLVE' });
+        });
+        document.body.appendChild(el);
+        setTimeout(() => { el.classList.remove('qs-toast-visible'); setTimeout(() => el.remove(), 200); }, 6000);
+      }
     } finally {
       processing = false;
       // 1b. Remove loading indicator

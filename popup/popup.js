@@ -7,7 +7,7 @@ const QUIZSOLVE_BASE_URL = 'https://getquizsolve.com';
 
 const BANNER_API = 'https://getquizsolve.com/api/banner';
 const BANNER_CACHE_TTL = 60 * 60 * 1000; // 1 hour
-const REVIEW_URL = 'https://chromewebstore.google.com/detail/ai-quiz-solve/YOUR_EXTENSION_ID/reviews';
+const REVIEW_URL = `https://chromewebstore.google.com/detail/ai-quiz-solve/${chrome.runtime.id}/reviews`;
 
 let currentApiMode = 'quizsolve_free';
 let currentPlan = 'free';
@@ -25,14 +25,12 @@ const highlightDurationSection = $('#highlightDurationSection');
 const rateLimitsSection = $('#rateLimitsSection');
 const featureDblClickSolveToggle = $('#featureDblClickSolve');
 const featureHighlightToggle = $('#featureHighlight');
-const featureRephraseToggle = $('#featureRephrase');
-const featureDrawRegionToggle = $('#featureDrawRegion');
-const featureSnapItToggle = $('#featureSnapIt');
+const featureScreenshotSolveToggle = $('#featureScreenshotSolve');
 const featureNotificationsToggle = $('#featureNotifications');
 const modalSizeSelect = $('#modalSize');
 
 // Rate limit config (fetched dynamically)
-let rateConfig = { free: { daily: 20, hourly: 15, perMinute: 5 }, pro: { daily: -1, hourly: -1, perMinute: 30 }, banner: { show: false, message: '', type: 'info' } };
+let rateConfig = { free: { daily: 10, hourly: 15, perMinute: 5 }, pro: { daily: -1, hourly: -1, perMinute: 30 }, banner: { show: false, message: '', type: 'info' } };
 
 // Account elements
 const planBadge = $('#planBadge');
@@ -40,6 +38,7 @@ const btnUpgrade = $('#btnUpgrade');
 const tokenInput = $('#tokenInput');
 const btnLogin = $('#btnLogin');
 const btnLogout = $('#btnLogout');
+const btnManageSub = $('#btnManageSub');
 const accountLoggedOut = $('#accountLoggedOut');
 const accountLoggedIn = $('#accountLoggedIn');
 const accountEmail = $('#accountEmail');
@@ -121,6 +120,16 @@ async function logout() {
   showNotification('Logged out', 'success');
 }
 
+async function manageSubscription() {
+  const { authToken } = await chrome.storage.local.get('authToken');
+  if (!authToken) {
+    showNotification('Please log in first', 'error');
+    return;
+  }
+  // Open the manage page with token in hash — the page handles the API call and redirect
+  chrome.tabs.create({ url: `${QUIZSOLVE_BASE_URL}/account/manage#token=${authToken}` });
+}
+
 function updateAccountUI(user) {
   if (user) {
     accountLoggedOut.style.display = 'none';
@@ -130,14 +139,16 @@ function updateAccountUI(user) {
     const isPro = (user.plan || currentPlan) === 'pro';
     planBadge.textContent = isPro ? 'Pro Plan' : 'Free Plan';
     planBadge.className = `plan-badge ${isPro ? 'plan-pro' : 'plan-free'}`;
+    planBadge.style.display = '';
     btnUpgrade.style.display = isPro ? 'none' : '';
+    btnManageSub.style.display = isPro ? '' : 'none';
   } else {
     accountLoggedOut.style.display = 'flex';
     accountLoggedIn.style.display = 'none';
     tokenInput.value = '';
-    planBadge.textContent = 'Free Plan';
-    planBadge.className = 'plan-badge plan-free';
+    planBadge.style.display = 'none';
     btnUpgrade.style.display = '';
+    btnManageSub.style.display = 'none';
   }
 }
 
@@ -155,6 +166,15 @@ async function init() {
         if (chrome.runtime.lastError) return;
         updateUsageDisplay(data.stats, data.rateLimits);
       });
+      // Populate language dropdown from config (fallback to defaults)
+      populateLanguageDropdown(resp.config.supportedLanguages || DEFAULT_LANGUAGES);
+      // Restore stored language selection
+      chrome.storage.sync.get('language', (result) => {
+        if (chrome.runtime.lastError) return;
+        if (result.language) {
+          setLangValue(result.language);
+        }
+      });
     }
   });
 
@@ -164,8 +184,8 @@ async function init() {
   const settings = await chrome.storage.local.get([
     'answerMode', 'highlightDuration', 'apiMode',
     'stats', 'rateLimits', 'sessionId',
-    'featureDblClickSolve', 'featureHighlight', 'featureRephrase', 'featureDrawRegion',
-    'featureSnapIt', 'featureNotifications', 'modalSize',
+    'featureDblClickSolve', 'featureHighlight',
+    'featureScreenshotSolve', 'featureNotifications', 'modalSize',
     'authToken', 'authUser', 'plan'
   ]);
 
@@ -176,9 +196,6 @@ async function init() {
     await chrome.storage.local.set({ apiMode: 'quizsolve_free' });
   }
   currentApiMode = apiMode;
-
-  const apiModeRadio = document.querySelector(`input[name="apiMode"][value="${currentApiMode}"]`);
-  if (apiModeRadio) apiModeRadio.checked = true;
 
   // Plan / Auth
   currentPlan = settings.plan || 'free';
@@ -201,10 +218,8 @@ async function init() {
   // Feature toggles
   featureDblClickSolveToggle.checked = settings.featureDblClickSolve !== false;
   featureHighlightToggle.checked = !!settings.featureHighlight;
-  featureRephraseToggle.checked = !!settings.featureRephrase;
-  featureDrawRegionToggle.checked = !!settings.featureDrawRegion;
-  featureSnapItToggle.checked = !!settings.featureSnapIt;
-  featureNotificationsToggle.checked = !!settings.featureNotifications;
+  featureScreenshotSolveToggle.checked = settings.featureScreenshotSolve !== false;
+  featureNotificationsToggle.checked = settings.featureNotifications !== false;
   if (settings.modalSize) modalSizeSelect.value = settings.modalSize;
 
   // Usage stats
@@ -227,7 +242,212 @@ async function init() {
   // Set version from manifest
   $('#version').textContent = 'v' + chrome.runtime.getManifest().version;
 
+  // Show Cmd instead of Ctrl on Mac
+  if (navigator.platform.indexOf('Mac') !== -1) {
+    $$('kbd').forEach(kbd => {
+      kbd.textContent = kbd.textContent.replace('Ctrl+', 'Cmd+');
+    });
+  }
+
   setupEventListeners();
+}
+
+// ============================================================
+// LANGUAGE DROPDOWN
+// ============================================================
+
+const DEFAULT_LANGUAGES = [
+  { code: 'en', name: 'English' },
+  { code: 'es', name: 'Spanish' },
+  { code: 'hi', name: 'Hindi' },
+  { code: 'fr', name: 'French' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'zh', name: 'Chinese (Simplified)' },
+  { code: 'zh-TW', name: 'Chinese (Traditional)' },
+  { code: 'ja', name: 'Japanese' },
+  { code: 'ko', name: 'Korean' },
+  { code: 'de', name: 'German' },
+  { code: 'it', name: 'Italian' },
+  { code: 'ru', name: 'Russian' },
+  { code: 'tr', name: 'Turkish' },
+  { code: 'vi', name: 'Vietnamese' },
+  { code: 'th', name: 'Thai' },
+  { code: 'id', name: 'Indonesian' },
+  { code: 'ms', name: 'Malay' },
+  { code: 'nl', name: 'Dutch' },
+  { code: 'pl', name: 'Polish' },
+  { code: 'uk', name: 'Ukrainian' },
+  { code: 'tl', name: 'Filipino' },
+  { code: 'bn', name: 'Bengali' },
+  { code: 'ta', name: 'Tamil' },
+  { code: 'te', name: 'Telugu' },
+  { code: 'kn', name: 'Kannada' },
+  { code: 'ml', name: 'Malayalam' },
+  { code: 'mr', name: 'Marathi' },
+  { code: 'gu', name: 'Gujarati' },
+  { code: 'pa', name: 'Punjabi' },
+  { code: 'ur', name: 'Urdu' },
+  { code: 'fa', name: 'Persian' },
+  { code: 'he', name: 'Hebrew' },
+  { code: 'sv', name: 'Swedish' },
+  { code: 'no', name: 'Norwegian' },
+  { code: 'da', name: 'Danish' },
+  { code: 'fi', name: 'Finnish' },
+  { code: 'cs', name: 'Czech' },
+  { code: 'ro', name: 'Romanian' },
+  { code: 'hu', name: 'Hungarian' },
+  { code: 'el', name: 'Greek' },
+  { code: 'bg', name: 'Bulgarian' },
+  { code: 'hr', name: 'Croatian' },
+  { code: 'sr', name: 'Serbian' },
+  { code: 'sk', name: 'Slovak' },
+  { code: 'sl', name: 'Slovenian' },
+  { code: 'lt', name: 'Lithuanian' },
+  { code: 'lv', name: 'Latvian' },
+  { code: 'et', name: 'Estonian' },
+  { code: 'sw', name: 'Swahili' },
+  { code: 'am', name: 'Amharic' },
+  { code: 'ka', name: 'Georgian' },
+  { code: 'kk', name: 'Kazakh' },
+  { code: 'uz', name: 'Uzbek' },
+  { code: 'ca', name: 'Catalan' },
+  { code: 'eu', name: 'Basque' },
+  { code: 'gl', name: 'Galician' },
+  { code: 'ne', name: 'Nepali' },
+  { code: 'si', name: 'Sinhala' },
+  { code: 'my', name: 'Myanmar (Burmese)' },
+  { code: 'km', name: 'Khmer' },
+  { code: 'lo', name: 'Lao' },
+  { code: 'mn', name: 'Mongolian' },
+  { code: 'az', name: 'Azerbaijani' },
+];
+
+let langOptions = [];
+let langSelectedCode = 'en';
+let langFocusedIndex = -1;
+
+function populateLanguageDropdown(languages) {
+  if (!languages || !languages.length) return;
+  langOptions = languages;
+  renderLangList(languages);
+}
+
+function renderLangList(filtered) {
+  const list = $('#langList');
+  list.innerHTML = '';
+  langFocusedIndex = -1;
+
+  if (filtered.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'search-select-empty';
+    empty.textContent = 'No languages found';
+    list.appendChild(empty);
+    return;
+  }
+
+  filtered.forEach((lang) => {
+    const li = document.createElement('li');
+    li.className = 'search-select-item';
+    if (lang.code === langSelectedCode) li.classList.add('selected');
+    li.textContent = lang.name;
+    li.dataset.code = lang.code;
+    li.addEventListener('click', () => selectLang(lang));
+    list.appendChild(li);
+  });
+}
+
+function selectLang(lang) {
+  langSelectedCode = lang.code;
+  $('#langValue').textContent = lang.name;
+  chrome.storage.sync.set({ language: lang.code });
+  closeLangDropdown();
+}
+
+function openLangDropdown() {
+  const wrap = $('#languageSelect');
+  if (wrap.classList.contains('open')) return;
+  wrap.classList.add('open');
+  const input = $('#langSearch');
+  input.value = '';
+  renderLangList(langOptions);
+  setTimeout(() => input.focus(), 0);
+}
+
+function closeLangDropdown() {
+  $('#languageSelect').classList.remove('open');
+  $('#langSearch').value = '';
+  langFocusedIndex = -1;
+}
+
+function updateLangFocus(items) {
+  items.forEach((el, i) => {
+    el.classList.toggle('focused', i === langFocusedIndex);
+  });
+  if (langFocusedIndex >= 0 && items[langFocusedIndex]) {
+    items[langFocusedIndex].scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function setLangValue(code) {
+  langSelectedCode = code;
+  const match = langOptions.find(l => l.code === code);
+  if (match) {
+    $('#langValue').textContent = match.name;
+  }
+}
+
+function setupLangDropdown() {
+  const trigger = $('#langTrigger');
+  const input = $('#langSearch');
+  const wrap = $('#languageSelect');
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (wrap.classList.contains('open')) {
+      closeLangDropdown();
+    } else {
+      openLangDropdown();
+    }
+  });
+
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase().trim();
+    const filtered = q
+      ? langOptions.filter(l => l.name.toLowerCase().includes(q) || l.code.toLowerCase().includes(q))
+      : langOptions;
+    renderLangList(filtered);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = $$('#langList .search-select-item');
+    if (!items.length) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      langFocusedIndex = Math.min(langFocusedIndex + 1, items.length - 1);
+      updateLangFocus(items);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      langFocusedIndex = Math.max(langFocusedIndex - 1, 0);
+      updateLangFocus(items);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (langFocusedIndex >= 0 && items[langFocusedIndex]) {
+        items[langFocusedIndex].click();
+      }
+    } else if (e.key === 'Escape') {
+      closeLangDropdown();
+      trigger.focus();
+    }
+  });
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    if (!wrap.contains(e.target)) {
+      closeLangDropdown();
+    }
+  });
 }
 
 // ============================================================
@@ -251,26 +471,6 @@ function setupEventListeners() {
       if (tab.dataset.tab === 'usage') {
         refreshUsageStats();
       }
-    });
-  });
-
-  // API Mode toggle
-  $$('input[name="apiMode"]').forEach(radio => {
-    radio.addEventListener('change', async () => {
-      const newMode = radio.value;
-
-      if (newMode === 'quizsolve_pro' && currentPlan !== 'pro') {
-        const { authToken } = await chrome.storage.local.get('authToken');
-        if (!authToken) {
-          showNotification('Login with a Pro token to use this mode', 'error');
-          const prevRadio = document.querySelector(`input[name="apiMode"][value="${currentApiMode}"]`);
-          if (prevRadio) prevRadio.checked = true;
-          return;
-        }
-      }
-
-      currentApiMode = newMode;
-      chrome.storage.local.set({ apiMode: currentApiMode });
     });
   });
 
@@ -301,16 +501,8 @@ function setupEventListeners() {
     chrome.storage.local.set({ featureHighlight: featureHighlightToggle.checked });
   });
 
-  featureRephraseToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ featureRephrase: featureRephraseToggle.checked });
-  });
-
-  featureDrawRegionToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ featureDrawRegion: featureDrawRegionToggle.checked });
-  });
-
-  featureSnapItToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ featureSnapIt: featureSnapItToggle.checked });
+  featureScreenshotSolveToggle.addEventListener('change', () => {
+    chrome.storage.local.set({ featureScreenshotSolve: featureScreenshotSolveToggle.checked });
   });
 
   featureNotificationsToggle.addEventListener('change', () => {
@@ -320,6 +512,9 @@ function setupEventListeners() {
   modalSizeSelect.addEventListener('change', () => {
     chrome.storage.local.set({ modalSize: modalSizeSelect.value });
   });
+
+  // Searchable language dropdown
+  setupLangDropdown();
 
   // Copy session ID
   $('#copySessionId').addEventListener('click', () => {
@@ -344,9 +539,20 @@ function setupEventListeners() {
     logout();
   });
 
+  // Manage Subscription button
+  btnManageSub.addEventListener('click', () => {
+    manageSubscription();
+  });
+
   // Upgrade button
   btnUpgrade.addEventListener('click', () => {
     chrome.tabs.create({ url: `${QUIZSOLVE_BASE_URL}/pricing` });
+  });
+
+  // Screenshot Solve button — triggers capture from popup
+  $('#btnScreenshotSolve').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'TRIGGER_SCREENSHOT_SOLVE' });
+    window.close();
   });
 }
 
@@ -376,7 +582,8 @@ function updateUsageLimitText() {
   if (currentPlan === 'pro') {
     el.textContent = 'Pro plan: Unlimited questions/day';
   } else {
-    el.textContent = 'Free plan: 20/day';
+    const screenshotLimit = rateConfig.free.screenshotDaily || 3;
+    el.textContent = `Free plan: ${rateConfig.free.daily}/day (incl. ${screenshotLimit} Snap It)`;
   }
 }
 
@@ -651,9 +858,7 @@ async function checkReviewPrompt() {
 
 btnRate.addEventListener('click', async () => {
   await chrome.storage.local.set({ hasRated: true });
-  const extensionId = chrome.runtime.id;
-  const url = REVIEW_URL.replace('YOUR_EXTENSION_ID', extensionId);
-  chrome.tabs.create({ url });
+  chrome.tabs.create({ url: REVIEW_URL });
   reviewPrompt.style.display = 'none';
 });
 
